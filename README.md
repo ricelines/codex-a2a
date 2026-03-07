@@ -86,7 +86,7 @@ Using the `codex` CLI:
 
 ```bash
 go run ./cmd/codex-a2a \
-  --listen :9001 \
+  --listen 127.0.0.1:9001 \
   --default-cwd /absolute/path/to/workspace
 ```
 
@@ -94,7 +94,7 @@ Using a direct `codex-app-server` binary:
 
 ```bash
 go run ./cmd/codex-a2a \
-  --listen :9001 \
+  --listen 127.0.0.1:9001 \
   --default-cwd /absolute/path/to/workspace \
   --codex-app-server-bin /absolute/path/to/codex-app-server
 ```
@@ -115,30 +115,9 @@ Once running:
 - Agent Card: `http://127.0.0.1:9001/.well-known/agent-card.json`
 - JSON-RPC endpoint: `http://127.0.0.1:9001/invoke`
 
-## Per-request Codex options
-
-Per-request overrides go in A2A metadata under `codexA2A`.
-
-Supported fields:
-
-```json
-{
-  "codexA2A": {
-    "cwd": "/absolute/path/to/workspace",
-    "model": "gpt-5.1-codex",
-    "approvalPolicy": "on-request",
-    "sandbox": "workspace-write",
-    "serviceName": "my_a2a_client"
-  }
-}
-```
-
-The wrapper reads `codexA2A` from either:
-
-- `message/send` or `message/stream` request `params.metadata`
-- `Message.metadata`
-
-Request-level metadata wins when both are present.
+The wrapper does not accept caller-supplied Codex session overrides through A2A
+metadata. Working directory, model selection, approval policy, and sandbox mode
+are server-owned defaults configured at startup.
 
 ## Task behavior
 
@@ -176,11 +155,6 @@ curl -s http://127.0.0.1:9001/invoke \
     "id":"1",
     "method":"message/send",
     "params":{
-      "metadata":{
-        "codexA2A":{
-          "cwd":"/absolute/path/to/workspace"
-        }
-      },
       "message":{
         "messageId":"msg-1",
         "role":"user",
@@ -232,7 +206,7 @@ Basic run:
 docker run --rm -p 9001:9001 \
   -v /absolute/path/to/workspace:/workspace \
   codex-a2a \
-  --listen :9001 \
+  --listen 0.0.0.0:9001 \
   --default-cwd /workspace
 ```
 
@@ -252,7 +226,7 @@ docker run --rm -p 9001:9001 \
   -v /absolute/path/to/workspace:/workspace \
   -v "$HOME/.codex/auth.json":/home/codex/.codex/auth.json:ro \
   codex-a2a \
-  --listen :9001 \
+  --listen 0.0.0.0:9001 \
   --default-cwd /workspace
 ```
 
@@ -263,7 +237,7 @@ docker run --rm -p 9001:9001 \
   -v /absolute/path/to/workspace:/workspace \
   -v "$HOME/.codex":/home/codex/.codex:ro \
   codex-a2a \
-  --listen :9001 \
+  --listen 0.0.0.0:9001 \
   --default-cwd /workspace
 ```
 

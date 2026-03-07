@@ -48,7 +48,7 @@ func (e *Executor) Close() error {
 }
 
 func (e *Executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, queue eventqueue.Queue) error {
-	options, err := mergeRequestOptions(e.cfg, reqCtx.Metadata, reqCtx.Message.Metadata)
+	options, err := requestOptionsFromConfig(e.cfg)
 	if err != nil {
 		return err
 	}

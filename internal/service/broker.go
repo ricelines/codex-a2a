@@ -154,8 +154,6 @@ func (b *broker) startSession(ctx context.Context, taskID a2a.TaskID, contextID 
 		Model:                  options.Model,
 		ApprovalPolicy:         options.ApprovalPolicy,
 		Sandbox:                options.Sandbox,
-		ServiceName:            options.ServiceName,
-		Config:                 options.Config,
 		ExperimentalRawEvents:  false,
 		PersistExtendedHistory: true,
 	})
@@ -194,7 +192,6 @@ func (b *broker) forkSession(
 		Model:                  options.Model,
 		ApprovalPolicy:         options.ApprovalPolicy,
 		Sandbox:                options.Sandbox,
-		Config:                 options.Config,
 		PersistExtendedHistory: true,
 	})
 	if err != nil {

@@ -17,7 +17,7 @@ import (
 func main() {
 	cfg := service.DefaultConfig()
 
-	listenAddr := flag.String("listen", ":9001", "TCP listen address")
+	listenAddr := flag.String("listen", "127.0.0.1:9001", "TCP listen address")
 	baseURL := flag.String("base-url", "", "Public base URL used in the agent card")
 	agentName := flag.String("agent-name", cfg.AgentName, "Agent card name")
 	agentDescription := flag.String("agent-description", cfg.AgentDescription, "Agent card description")

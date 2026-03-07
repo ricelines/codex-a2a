@@ -6,39 +6,40 @@ import (
 	"github.com/a2aproject/a2a-go/a2a"
 )
 
-func TestMergeRequestOptions(t *testing.T) {
+func TestRequestOptionsFromConfig(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.DefaultCwd = "/default"
 	cfg.DefaultModel = "gpt-default"
 
-	requestMeta := map[string]any{
-		metadataNamespace: map[string]any{
-			"model":          "gpt-request",
-			"approvalPolicy": "on-request",
-		},
-	}
-	messageMeta := map[string]any{
-		metadataNamespace: map[string]any{
-			"cwd":     "/message",
-			"sandbox": "readOnly",
-		},
-	}
-
-	got, err := mergeRequestOptions(cfg, requestMeta, messageMeta)
+	got, err := requestOptionsFromConfig(cfg)
 	if err != nil {
-		t.Fatalf("mergeRequestOptions() error = %v", err)
+		t.Fatalf("requestOptionsFromConfig() error = %v", err)
 	}
-	if got.Cwd != "/message" {
-		t.Fatalf("cwd = %q, want %q", got.Cwd, "/message")
+	if got.Cwd != "/default" {
+		t.Fatalf("cwd = %q, want %q", got.Cwd, "/default")
 	}
-	if got.Model != "gpt-request" {
-		t.Fatalf("model = %q, want %q", got.Model, "gpt-request")
+	if got.Model != "gpt-default" {
+		t.Fatalf("model = %q, want %q", got.Model, "gpt-default")
 	}
 	if got.ApprovalPolicy != "on-request" {
 		t.Fatalf("approvalPolicy = %q, want %q", got.ApprovalPolicy, "on-request")
 	}
 	if got.Sandbox != "read-only" {
 		t.Fatalf("sandbox = %q, want %q", got.Sandbox, "read-only")
+	}
+}
+
+func TestRequestOptionsFromConfigRejectsInvalidDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.DefaultApprovalPolicy = "definitely-not-valid"
+	if _, err := requestOptionsFromConfig(cfg); err == nil {
+		t.Fatal("requestOptionsFromConfig() unexpectedly accepted invalid approval policy")
+	}
+
+	cfg = DefaultConfig()
+	cfg.DefaultSandbox = "definitely-not-valid"
+	if _, err := requestOptionsFromConfig(cfg); err == nil {
+		t.Fatal("requestOptionsFromConfig() unexpectedly accepted invalid sandbox")
 	}
 }
 

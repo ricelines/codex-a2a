@@ -26,8 +26,9 @@ type taskStore struct {
 	tasks map[a2a.TaskID]*storedTask
 }
 
-// NewTaskStore returns an in-memory task store that treats unauthenticated callers as a
-// stable anonymous user so tasks/list works in the default local deployment.
+// NewTaskStore returns an in-memory task store with per-user ownership checks.
+// Unauthenticated callers still share a local anonymous view because this repo
+// does not provide an auth layer of its own.
 func NewTaskStore() a2asrv.TaskStore {
 	return &taskStore{tasks: make(map[a2a.TaskID]*storedTask)}
 }
@@ -45,6 +46,9 @@ func (s *taskStore) Save(ctx context.Context, task *a2a.Task, _ a2a.Event, prev 
 
 	version := a2a.TaskVersion(1)
 	if stored := s.tasks[task.ID]; stored != nil {
+		if stored.user != user {
+			return a2a.TaskVersionMissing, a2a.ErrTaskNotFound
+		}
 		if prev != a2a.TaskVersionMissing && stored.version != prev {
 			return a2a.TaskVersionMissing, a2a.ErrConcurrentTaskModification
 		}
@@ -60,12 +64,12 @@ func (s *taskStore) Save(ctx context.Context, task *a2a.Task, _ a2a.Event, prev 
 	return version, nil
 }
 
-func (s *taskStore) Get(_ context.Context, taskID a2a.TaskID) (*a2a.Task, a2a.TaskVersion, error) {
+func (s *taskStore) Get(ctx context.Context, taskID a2a.TaskID) (*a2a.Task, a2a.TaskVersion, error) {
 	s.mu.RLock()
 	stored := s.tasks[taskID]
 	s.mu.RUnlock()
 
-	if stored == nil {
+	if stored == nil || stored.user != taskStoreUser(ctx) {
 		return nil, a2a.TaskVersionMissing, a2a.ErrTaskNotFound
 	}
 

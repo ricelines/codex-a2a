@@ -32,8 +32,6 @@ type threadStartParams struct {
 	Model                  string         `json:"model,omitempty"`
 	ApprovalPolicy         string         `json:"approvalPolicy,omitempty"`
 	Sandbox                string         `json:"sandbox,omitempty"`
-	ServiceName            string         `json:"serviceName,omitempty"`
-	Config                 map[string]any `json:"config,omitempty"`
 	ExperimentalRawEvents  bool           `json:"experimentalRawEvents"`
 	PersistExtendedHistory bool           `json:"persistExtendedHistory"`
 }
@@ -44,7 +42,6 @@ type threadResumeParams struct {
 	Model                  string         `json:"model,omitempty"`
 	ApprovalPolicy         string         `json:"approvalPolicy,omitempty"`
 	Sandbox                string         `json:"sandbox,omitempty"`
-	Config                 map[string]any `json:"config,omitempty"`
 	PersistExtendedHistory bool           `json:"persistExtendedHistory"`
 }
 
@@ -54,7 +51,6 @@ type threadForkParams struct {
 	Model                  string         `json:"model,omitempty"`
 	ApprovalPolicy         string         `json:"approvalPolicy,omitempty"`
 	Sandbox                string         `json:"sandbox,omitempty"`
-	Config                 map[string]any `json:"config,omitempty"`
 	PersistExtendedHistory bool           `json:"persistExtendedHistory"`
 }
 
