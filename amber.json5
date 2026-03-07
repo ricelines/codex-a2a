@@ -1,0 +1,42 @@
+{
+  manifest_version: "0.1.0",
+
+  config_schema: {
+    type: "object",
+    properties: {
+      auth_json: { type: "string", secret: true },
+      config_toml: { type: "string" },
+      agents_md: { type: "string" },
+    },
+    required: ["auth_json", "config_toml", "agents_md"],
+    additionalProperties: false,
+  },
+
+  program: {
+    image: "codex-a2a:v0.1",
+    entrypoint: [
+      "/usr/local/bin/docker-entrypoint.sh",
+      "codex-a2a",
+      "--listen", ":9001",
+      "--default-cwd", "/workspace",
+    ],
+    mounts: [
+      { path: "/home/codex/.codex/auth.json", from: "secret.auth_json" },
+      { path: "/home/codex/.codex/config.toml", from: "config.config_toml" },
+      { path: "/workspace/AGENTS.md", from: "config.agents_md" },
+    ],
+    network: {
+      endpoints: [
+        { name: "agent", port: 9001, protocol: "http" },
+      ],
+    },
+  },
+
+  provides: {
+    a2a: { kind: "a2a", endpoint: "agent" },
+  },
+
+  exports: {
+    a2a: "a2a",
+  },
+}
