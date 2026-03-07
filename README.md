@@ -1,12 +1,12 @@
 # codex-a2a
 
-`codex-a2a` is an A2A server that fronts Codex through `codex app-server`.
+`codex-a2a` is an A2A 0.3.x server that fronts Codex through `codex app-server`.
 
 The wrapper maps:
 
 - A2A `contextId` -> one related family of Codex thread snapshots
 - A2A `taskId` -> one dedicated Codex thread snapshot plus one Codex turn
-- A2A `INPUT_REQUIRED` -> Codex approvals and MCP elicitations
+- A2A task state `input-required` -> Codex approvals and MCP elicitations
 
 This repository intentionally uses `codex app-server`, not `codex mcp-server`. The app-server has the stable thread/turn/item surface needed to support streaming tasks, approvals, cancellation, and multi-turn context without inventing wrapper-only control flow.
 
@@ -135,7 +135,7 @@ Supported fields:
 
 The wrapper reads `codexA2A` from either:
 
-- `SendMessageRequest.metadata`
+- `message/send` or `message/stream` request `params.metadata`
 - `Message.metadata`
 
 Request-level metadata wins when both are present.
@@ -144,27 +144,27 @@ Request-level metadata wins when both are present.
 
 - Starting a message with no `taskId` creates a new A2A task. If `contextId` is also empty, the wrapper creates a new Codex thread.
 - Starting a message with a new `taskId` and an existing `contextId` creates a new Codex thread by forking from the referenced prior task, or from the sole unambiguous branch in that context.
-- Continuing the same `taskId` is only supported when the task is already in `INPUT_REQUIRED`.
+- Continuing the same `taskId` is only supported when the task is already in `input-required`.
 - Parallel tasks in the same `contextId` are supported. Each task gets its own Codex thread snapshot so prior tasks remain immutable.
 - If a context has multiple branches, clients should send `referenceTaskIds`. The wrapper fails ambiguous follow-ups rather than silently guessing the wrong branch.
 
-The last point is deliberate: `a2a-go` allows only one active execution per task, so this wrapper does not treat same-task follow-up messages as Codex `turn/steer` while a task is still `WORKING`.
+The last point is deliberate: `a2a-go` allows only one active execution per task, so this wrapper does not treat same-task follow-up messages as Codex `turn/steer` while a task is still `working`.
 
 ## Approvals and MCP elicitation
 
 When Codex pauses for approval or structured input, the wrapper:
 
 1. emits a `pending:user-input` artifact
-2. moves the task to `INPUT_REQUIRED`
+2. moves the task to `input-required`
 3. waits for another A2A message on the same `taskId`
 
 Reply formats:
 
-- Command approval: text `accept`, `decline`, `cancel`, or data `{"decision":"accept"}`
-- File approval: text `accept`, `decline`, or data `{"decision":"accept"}`
-- MCP elicitation: data `{"action":"accept","content":{...}}`, or text `decline` / `cancel`
+- Command approval: text `accept`, `decline`, `cancel`, or a data part with `{"decision":"accept"}`
+- File approval: text `accept`, `decline`, or a data part with `{"decision":"accept"}`
+- MCP elicitation: a data part with `{"action":"accept","content":{...}}`, or text `decline` / `cancel`
 
-## Minimal JSON-RPC example
+## Minimal 0.3 JSON-RPC example
 
 New task:
 
@@ -174,7 +174,7 @@ curl -s http://127.0.0.1:9001/invoke \
   -d '{
     "jsonrpc":"2.0",
     "id":"1",
-    "method":"SendMessage",
+    "method":"message/send",
     "params":{
       "metadata":{
         "codexA2A":{
@@ -184,7 +184,7 @@ curl -s http://127.0.0.1:9001/invoke \
       "message":{
         "messageId":"msg-1",
         "role":"user",
-        "parts":[{"text":"Inspect this repository and summarize the current changes."}]
+        "parts":[{"kind":"text","text":"Inspect this repository and summarize the current changes."}]
       }
     }
   }'
@@ -199,12 +199,12 @@ curl -N http://127.0.0.1:9001/invoke \
   -d '{
     "jsonrpc":"2.0",
     "id":"1",
-    "method":"SendStreamingMessage",
+    "method":"message/stream",
     "params":{
       "message":{
         "messageId":"msg-1",
         "role":"user",
-        "parts":[{"text":"Make the requested change and explain the diff."}]
+        "parts":[{"kind":"text","text":"Make the requested change and explain the diff."}]
       }
     }
   }'

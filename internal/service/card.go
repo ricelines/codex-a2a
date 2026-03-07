@@ -11,11 +11,17 @@ import (
 func AgentCard(cfg Config, baseURL string) *a2a.AgentCard {
 	invokeURL := strings.TrimRight(baseURL, "/") + "/invoke"
 	return &a2a.AgentCard{
-		Name:        cfg.AgentName,
-		Description: cfg.AgentDescription,
-		Version:     "0.1.0",
-		SupportedInterfaces: []*a2a.AgentInterface{
-			a2a.NewAgentInterface(invokeURL, a2a.TransportProtocolJSONRPC),
+		Name:               cfg.AgentName,
+		Description:        cfg.AgentDescription,
+		Version:            "0.1.0",
+		URL:                invokeURL,
+		ProtocolVersion:    string(a2a.Version),
+		PreferredTransport: a2a.TransportProtocolJSONRPC,
+		AdditionalInterfaces: []a2a.AgentInterface{
+			{
+				URL:       invokeURL,
+				Transport: a2a.TransportProtocolJSONRPC,
+			},
 		},
 		DefaultInputModes:  []string{"text/plain", "application/json"},
 		DefaultOutputModes: []string{"text/plain", "application/json"},

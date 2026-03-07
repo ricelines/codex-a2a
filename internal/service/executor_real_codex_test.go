@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,7 +22,7 @@ func TestRealCodexUsesAuthConfigAndAgentsInstructions(t *testing.T) {
 	bin := findRealCodexBinary(t)
 
 	recorder := newResponsesRecorder("real-codex-ok")
-	server := recorder.server()
+	server := recorder.server(t)
 	defer server.Close()
 
 	workspace := t.TempDir()
@@ -41,7 +41,7 @@ func TestRealCodexUsesAuthConfigAndAgentsInstructions(t *testing.T) {
 	ctx, cancel := context.WithTimeout(newAuthedContext(), 30*time.Second)
 	defer cancel()
 
-	task := mustSendTask(ctx, t, h.handler, a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hello from real codex")))
+	task := mustSendTask(ctx, t, h.handler, a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "hello from real codex"}))
 	if task.Status.State != a2a.TaskStateCompleted {
 		t.Fatalf(
 			"task.Status.State = %s, want %s; status message=%q; captured requests=%d",
@@ -67,7 +67,7 @@ func TestRealCodexCreatesDistinctThreadsForFollowUpTasks(t *testing.T) {
 	bin := findRealCodexBinary(t)
 
 	recorder := newResponsesRecorder("thread-check")
-	server := recorder.server()
+	server := recorder.server(t)
 	defer server.Close()
 
 	h := newRealCodexHarness(t, realCodexHarnessOptions{
@@ -80,12 +80,12 @@ func TestRealCodexCreatesDistinctThreadsForFollowUpTasks(t *testing.T) {
 	ctx, cancel := context.WithTimeout(newAuthedContext(), 30*time.Second)
 	defer cancel()
 
-	first := mustSendTask(ctx, t, h.handler, a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("first task")))
+	first := mustSendTask(ctx, t, h.handler, a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "first task"}))
 	if first.Status.State != a2a.TaskStateCompleted {
 		t.Fatalf("first task status = %s; message=%q", first.Status.State, statusMessageText(first))
 	}
 
-	secondMsg := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("second task"))
+	secondMsg := a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "second task"})
 	secondMsg.ContextID = first.ContextID
 	second := mustSendTask(ctx, t, h.handler, secondMsg)
 	if second.Status.State != a2a.TaskStateCompleted {
@@ -222,8 +222,21 @@ func newResponsesRecorder(response string) *responsesRecorder {
 	return &responsesRecorder{response: response}
 }
 
-func (r *responsesRecorder) server() *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+type loopbackServer struct {
+	URL      string
+	server   *http.Server
+	listener net.Listener
+}
+
+func (s *loopbackServer) Close() {
+	_ = s.server.Close()
+	_ = s.listener.Close()
+}
+
+func (r *responsesRecorder) server(t *testing.T) *loopbackServer {
+	t.Helper()
+
+	handler := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		if req.Method != http.MethodPost || req.URL.Path != "/v1/responses" {
 			http.NotFound(rw, req)
 			return
@@ -250,7 +263,24 @@ func (r *responsesRecorder) server() *httptest.Server {
 				"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"output\":[]}}\n\n",
 			r.response,
 		))
-	}))
+	})
+
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("sandbox cannot open a loopback listener for real Codex tests: %v", err)
+	}
+	server := &http.Server{Handler: handler}
+	go func() {
+		err := server.Serve(listener)
+		if err != nil && err != http.ErrServerClosed {
+			panic(err)
+		}
+	}()
+	return &loopbackServer{
+		URL:      "http://" + listener.Addr().String(),
+		server:   server,
+		listener: listener,
+	}
 }
 
 func (r *responsesRecorder) requests() []capturedResponseRequest {

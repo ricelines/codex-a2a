@@ -22,10 +22,10 @@ func TestExecutorStreamingCompletes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(newAuthedContext(), 10*time.Second)
 	defer cancel()
 
-	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hello"))
-	events, err := collectEvents(h.handler.SendStreamingMessage(ctx, &a2a.SendMessageRequest{Message: msg}))
+	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "hello"})
+	events, err := collectEvents(h.handler.OnSendMessageStream(ctx, &a2a.MessageSendParams{Message: msg}))
 	if err != nil {
-		t.Fatalf("SendStreamingMessage() error = %v", err)
+		t.Fatalf("OnSendMessageStream() error = %v", err)
 	}
 
 	assertHasTaskState(t, events, a2a.TaskStateSubmitted)
@@ -39,10 +39,10 @@ func TestExecutorApprovalRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(newAuthedContext(), 10*time.Second)
 	defer cancel()
 
-	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("NEEDS_APPROVAL"))
-	firstRun, err := collectEvents(h.handler.SendStreamingMessage(ctx, &a2a.SendMessageRequest{Message: msg}))
+	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "NEEDS_APPROVAL"})
+	firstRun, err := collectEvents(h.handler.OnSendMessageStream(ctx, &a2a.MessageSendParams{Message: msg}))
 	if err != nil {
-		t.Fatalf("first SendStreamingMessage() error = %v", err)
+		t.Fatalf("first OnSendMessageStream() error = %v", err)
 	}
 	assertHasTaskState(t, firstRun, a2a.TaskStateInputRequired)
 
@@ -50,11 +50,11 @@ func TestExecutorApprovalRoundTrip(t *testing.T) {
 	reply := a2a.NewMessageForTask(
 		a2a.MessageRoleUser,
 		a2a.TaskInfo{TaskID: taskID, ContextID: contextID},
-		a2a.NewDataPart(map[string]any{"decision": "accept"}),
+		a2a.DataPart{Data: map[string]any{"decision": "accept"}},
 	)
-	secondRun, err := collectEvents(h.handler.SendStreamingMessage(ctx, &a2a.SendMessageRequest{Message: reply}))
+	secondRun, err := collectEvents(h.handler.OnSendMessageStream(ctx, &a2a.MessageSendParams{Message: reply}))
 	if err != nil {
-		t.Fatalf("second SendStreamingMessage() error = %v", err)
+		t.Fatalf("second OnSendMessageStream() error = %v", err)
 	}
 	assertHasTaskState(t, secondRun, a2a.TaskStateWorking)
 	assertHasArtifactText(t, secondRun, "approval accepted")
@@ -66,20 +66,20 @@ func TestExecutorCancelTask(t *testing.T) {
 	ctx, cancel := context.WithTimeout(newAuthedContext(), 10*time.Second)
 	defer cancel()
 
-	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("NEEDS_APPROVAL"))
-	firstRun, err := collectEvents(h.handler.SendStreamingMessage(ctx, &a2a.SendMessageRequest{Message: msg}))
+	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "NEEDS_APPROVAL"})
+	firstRun, err := collectEvents(h.handler.OnSendMessageStream(ctx, &a2a.MessageSendParams{Message: msg}))
 	if err != nil {
-		t.Fatalf("SendStreamingMessage() error = %v", err)
+		t.Fatalf("OnSendMessageStream() error = %v", err)
 	}
 	assertHasTaskState(t, firstRun, a2a.TaskStateInputRequired)
 
 	taskID, _ := taskIdentity(t, firstRun)
-	result, err := h.handler.CancelTask(ctx, &a2a.CancelTaskRequest{ID: taskID})
+	result, err := h.handler.OnCancelTask(ctx, &a2a.TaskIDParams{ID: taskID})
 	if err != nil {
-		t.Fatalf("CancelTask() error = %v", err)
+		t.Fatalf("OnCancelTask() error = %v", err)
 	}
 	if result.Status.State != a2a.TaskStateCanceled {
-		t.Fatalf("CancelTask() state = %s, want %s", result.Status.State, a2a.TaskStateCanceled)
+		t.Fatalf("OnCancelTask() state = %s, want %s", result.Status.State, a2a.TaskStateCanceled)
 	}
 }
 
@@ -88,21 +88,21 @@ func TestExecutorListTasksByContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(newAuthedContext(), 10*time.Second)
 	defer cancel()
 
-	firstTask := mustSendTask(ctx, t, h.handler, a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("first task")))
+	firstTask := mustSendTask(ctx, t, h.handler, a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "first task"}))
 
-	second := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("second task"))
+	second := a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "second task"})
 	second.ContextID = firstTask.ContextID
 	secondTask := mustSendTask(ctx, t, h.handler, second)
 
-	list, err := h.handler.ListTasks(ctx, &a2a.ListTasksRequest{ContextID: firstTask.ContextID, IncludeArtifacts: true})
+	list, err := h.handler.OnListTasks(ctx, &a2a.ListTasksRequest{ContextID: firstTask.ContextID, IncludeArtifacts: true})
 	if err != nil {
-		t.Fatalf("ListTasks() error = %v", err)
+		t.Fatalf("OnListTasks() error = %v", err)
 	}
 	if len(list.Tasks) != 2 {
-		t.Fatalf("ListTasks() returned %d tasks, want 2", len(list.Tasks))
+		t.Fatalf("OnListTasks() returned %d tasks, want 2", len(list.Tasks))
 	}
 	if list.Tasks[0].ContextID != firstTask.ContextID || list.Tasks[1].ContextID != secondTask.ContextID {
-		t.Fatalf("ListTasks() returned tasks from unexpected contexts: %#v", list.Tasks)
+		t.Fatalf("OnListTasks() returned tasks from unexpected contexts: %#v", list.Tasks)
 	}
 }
 
@@ -150,20 +150,20 @@ func newTestHandler(t *testing.T) a2asrv.RequestHandler {
 }
 
 func newAuthedContext() context.Context {
-	ctx, callCtx := a2asrv.NewCallContext(context.Background(), nil)
-	callCtx.User = a2asrv.NewAuthenticatedUser("tester", nil)
+	ctx, callCtx := a2asrv.WithCallContext(context.Background(), nil)
+	callCtx.User = &a2asrv.AuthenticatedUser{UserName: "tester"}
 	return ctx
 }
 
 func mustSendTask(ctx context.Context, t *testing.T, handler a2asrv.RequestHandler, msg *a2a.Message) *a2a.Task {
 	t.Helper()
-	result, err := handler.SendMessage(ctx, &a2a.SendMessageRequest{Message: msg})
+	result, err := handler.OnSendMessage(ctx, &a2a.MessageSendParams{Message: msg})
 	if err != nil {
-		t.Fatalf("SendMessage() error = %v", err)
+		t.Fatalf("OnSendMessage() error = %v", err)
 	}
 	task, ok := result.(*a2a.Task)
 	if !ok {
-		t.Fatalf("SendMessage() result = %T, want *a2a.Task", result)
+		t.Fatalf("OnSendMessage() result = %T, want *a2a.Task", result)
 	}
 	return task
 }
@@ -207,7 +207,7 @@ func assertHasArtifactText(t *testing.T, events []a2a.Event, want string) {
 			continue
 		}
 		for _, part := range artifact.Artifact.Parts {
-			if strings.Contains(part.Text(), want) {
+			if strings.Contains(partText(part), want) {
 				return
 			}
 		}
@@ -296,7 +296,7 @@ func assertTaskArtifactContains(t *testing.T, task *a2a.Task, want string) {
 	t.Helper()
 	for _, artifact := range task.Artifacts {
 		for _, part := range artifact.Parts {
-			if strings.Contains(part.Text(), want) {
+			if strings.Contains(partText(part), want) {
 				return
 			}
 		}

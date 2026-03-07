@@ -43,7 +43,7 @@ func TestMergeRequestOptions(t *testing.T) {
 }
 
 func TestResponseForPending_TextApproval(t *testing.T) {
-	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("accept"))
+	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "accept"})
 	pending := &pendingRequest{Kind: pendingCommandApproval}
 
 	got, err := responseForPending(msg, pending)
