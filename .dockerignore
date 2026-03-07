@@ -1,0 +1,10 @@
+.git
+.gitignore
+A2A
+a2a-go
+codex
+tmp
+dist
+bin
+*.log
+*.tmp

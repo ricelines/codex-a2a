@@ -1,0 +1,50 @@
+# Go build output
+/bin/
+/codex-a2a
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Node and external checkouts that are not part of this wrapper
+/node_modules/
+A2A/
+a2a-go/
+codex/
+
+# Local cache / generated data
+/.tmp_gocache/
+/.tmp_gomodcache/
+/tmp/
+/dist/
+/out/
+build/
+coverage/
+
+# Editors and OS files
+.vscode/
+.idea/
+.DS_Store
+.DS_Store?
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+*~
+
+# Environment and local credentials
+.env
+.env*
+
+# Python artifacts (inherited from included repos)
+__pycache__/
+*.py[cod]
+
+# Rust artifacts (in case nested rust project builds)
+/target/
+/target-*/
