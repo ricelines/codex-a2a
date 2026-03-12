@@ -8,7 +8,7 @@
       config_toml: { type: "string" },
       agents_md: { type: "string" },
     },
-    required: ["auth_json", "config_toml", "agents_md"],
+    required: ["auth_json"],
     additionalProperties: false,
   },
 
