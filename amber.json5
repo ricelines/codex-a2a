@@ -13,7 +13,7 @@
   },
 
   program: {
-    image: "codex-a2a:v0.1",
+    image: "ghcr.io/ricelines/codex-a2a:v0.1",
     entrypoint: [
       "/usr/local/bin/docker-entrypoint.sh",
       "codex-a2a",
