@@ -106,6 +106,47 @@ func TestExecutorListTasksByContext(t *testing.T) {
 	}
 }
 
+func TestExecutorInvalidInitialMessageDoesNotCreateForkParent(t *testing.T) {
+	h := newTestHarness(t)
+	ctx, cancel := context.WithTimeout(newAuthedContext(), 10*time.Second)
+	defer cancel()
+
+	invalid := mustSendTask(ctx, t, h.handler, a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: ""}))
+	if invalid.Status.State != a2a.TaskStateFailed {
+		t.Fatalf("invalid.Status.State = %s, want %s", invalid.Status.State, a2a.TaskStateFailed)
+	}
+	if invalid.Status.Message == nil || !strings.Contains(messageText(invalid.Status.Message), "Codex-compatible") {
+		t.Fatalf("invalid.Status.Message = %#v, want Codex-compatible error", invalid.Status.Message)
+	}
+
+	before := fakeOperations(t, h.stateDir)
+	if len(before) != 0 {
+		t.Fatalf("invalid first message unexpectedly touched codex state: %#v", before)
+	}
+
+	retry := a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "hello"})
+	retry.ContextID = invalid.ContextID
+	task := mustSendTask(ctx, t, h.handler, retry)
+
+	assertTaskArtifactContains(t, task, "done: hello")
+
+	var starts, forks int
+	for _, op := range fakeOperations(t, h.stateDir) {
+		switch op.Method {
+		case "thread/start":
+			starts++
+		case "thread/fork":
+			forks++
+		}
+	}
+	if starts != 1 {
+		t.Fatalf("thread/start count = %d, want 1", starts)
+	}
+	if forks != 0 {
+		t.Fatalf("thread/fork count = %d, want 0", forks)
+	}
+}
+
 type testHarness struct {
 	handler  a2asrv.RequestHandler
 	executor *Executor

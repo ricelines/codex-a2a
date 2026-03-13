@@ -80,11 +80,15 @@ func (e *Executor) execute(
 ) error {
 	switch {
 	case reqCtx.StoredTask == nil:
+		input, err := codexInputsFromMessage(reqCtx.Message)
+		if err != nil {
+			return err
+		}
 		runtime, err := e.broker.startTask(ctx, reqCtx.TaskID, reqCtx.ContextID, options, reqCtx.Message.ReferenceTasks)
 		if err != nil {
 			return err
 		}
-		return e.startNewTurn(ctx, reqCtx, runtime, options, queue)
+		return e.startNewTurn(ctx, reqCtx, runtime, options, input, queue)
 	case reqCtx.StoredTask.Status.State == a2a.TaskStateInputRequired:
 		runtime, err := e.broker.task(reqCtx.TaskID)
 		if err != nil {
@@ -101,14 +105,9 @@ func (e *Executor) startNewTurn(
 	reqCtx *a2asrv.RequestContext,
 	runtime *taskRuntime,
 	options RequestOptions,
+	input []codexUserInput,
 	queue eventqueue.Queue,
 ) error {
-	input, err := codexInputsFromMessage(reqCtx.Message)
-	if err != nil {
-		e.broker.finishTask(reqCtx.TaskID)
-		return err
-	}
-
 	respRaw, err := runtime.Session.Client.request(ctx, "turn/start", turnStartParams{
 		ThreadID:       runtime.Session.ThreadID,
 		Input:          input,
@@ -118,12 +117,12 @@ func (e *Executor) startNewTurn(
 		SandboxPolicy:  sandboxPolicyFromString(options.Sandbox),
 	})
 	if err != nil {
-		e.broker.finishTask(reqCtx.TaskID)
+		e.broker.discardTask(reqCtx.TaskID)
 		return fmt.Errorf("codex turn/start: %w", err)
 	}
 	resp, err := decodeJSON[turnStartResponse](respRaw)
 	if err != nil {
-		e.broker.finishTask(reqCtx.TaskID)
+		e.broker.discardTask(reqCtx.TaskID)
 		return fmt.Errorf("decode turn/start response: %w", err)
 	}
 

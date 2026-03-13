@@ -312,6 +312,14 @@ func (b *broker) task(taskID a2a.TaskID) (*taskRuntime, error) {
 }
 
 func (b *broker) finishTask(taskID a2a.TaskID) {
+	b.finishTaskWithPolicy(taskID, true)
+}
+
+func (b *broker) discardTask(taskID a2a.TaskID) {
+	b.finishTaskWithPolicy(taskID, false)
+}
+
+func (b *broker) finishTaskWithPolicy(taskID a2a.TaskID, preserveSession bool) {
 	var client *codexClient
 
 	b.mu.Lock()
@@ -322,6 +330,23 @@ func (b *broker) finishTask(taskID a2a.TaskID) {
 	}
 	delete(b.tasks, taskID)
 	if runtime.Session != nil {
+		if !preserveSession {
+			state := b.contexts[runtime.ContextID]
+			if state != nil {
+				session := state.tasks[taskID]
+				if session != nil {
+					if session.ParentTaskID != "" {
+						if parent := state.tasks[session.ParentTaskID]; parent != nil && parent.childCount > 0 {
+							parent.childCount--
+						}
+					}
+					delete(state.tasks, taskID)
+					if len(state.tasks) == 0 {
+						delete(b.contexts, runtime.ContextID)
+					}
+				}
+			}
+		}
 		client = runtime.Session.Client
 		runtime.Session.Client = nil
 	}
