@@ -147,6 +147,84 @@ func TestExecutorInvalidInitialMessageDoesNotCreateForkParent(t *testing.T) {
 	}
 }
 
+func TestExecutorForwardsCodexConfigAndIndexedMCPServers(t *testing.T) {
+	h := newTestHarnessWithConfig(t, func(cfg *Config) {
+		cfg.DefaultModel = "gpt-forwarded"
+		cfg.CodexConfig["model_reasoning_effort"] = "medium"
+		cfg.CodexConfig["developer_instructions"] = "Keep responses terse."
+		cfg.MCPServerURLs = []string{
+			"https://tools-one.example/mcp",
+			"https://tools-two.example/mcp",
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(newAuthedContext(), 10*time.Second)
+	defer cancel()
+
+	first := mustSendTask(ctx, t, h.handler, a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "first"}))
+	if first.Status.State != a2a.TaskStateCompleted {
+		t.Fatalf("first.Status.State = %s, want %s", first.Status.State, a2a.TaskStateCompleted)
+	}
+
+	secondMsg := a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "second"})
+	secondMsg.ContextID = first.ContextID
+	second := mustSendTask(ctx, t, h.handler, secondMsg)
+	if second.Status.State != a2a.TaskStateCompleted {
+		t.Fatalf("second.Status.State = %s, want %s", second.Status.State, a2a.TaskStateCompleted)
+	}
+
+	var startOp *fakeOperation
+	var forkOp *fakeOperation
+	for _, op := range fakeOperations(t, h.stateDir) {
+		op := op
+		switch op.Method {
+		case "thread/start":
+			startOp = &op
+		case "thread/fork":
+			forkOp = &op
+		}
+	}
+	if startOp == nil {
+		t.Fatal("missing thread/start operation")
+	}
+	if forkOp == nil {
+		t.Fatal("missing thread/fork operation")
+	}
+
+	for _, op := range []*fakeOperation{startOp, forkOp} {
+		if op.Model != "gpt-forwarded" {
+			t.Fatalf("%s model = %q, want %q", op.Method, op.Model, "gpt-forwarded")
+		}
+		if op.Config["analytics.enabled"] != false {
+			t.Fatalf("%s analytics.enabled = %#v, want false", op.Method, op.Config["analytics.enabled"])
+		}
+		if op.Config["personality"] != "none" {
+			t.Fatalf("%s personality = %#v, want %q", op.Method, op.Config["personality"], "none")
+		}
+		if op.Config["history.persistence"] != "none" {
+			t.Fatalf("%s history.persistence = %#v, want %q", op.Method, op.Config["history.persistence"], "none")
+		}
+		if op.Config["check_for_update_on_startup"] != false {
+			t.Fatalf("%s check_for_update_on_startup = %#v, want false", op.Method, op.Config["check_for_update_on_startup"])
+		}
+		if op.Config["commit_attribution"] != "" {
+			t.Fatalf("%s commit_attribution = %#v, want empty string", op.Method, op.Config["commit_attribution"])
+		}
+		if op.Config["model_reasoning_effort"] != "medium" {
+			t.Fatalf("%s model_reasoning_effort = %#v, want %q", op.Method, op.Config["model_reasoning_effort"], "medium")
+		}
+		if op.Config["developer_instructions"] != "Keep responses terse." {
+			t.Fatalf("%s developer_instructions = %#v, want %q", op.Method, op.Config["developer_instructions"], "Keep responses terse.")
+		}
+		if op.Config["mcp_servers.0.url"] != "https://tools-one.example/mcp" {
+			t.Fatalf("%s mcp_servers.0.url = %#v, want first MCP URL", op.Method, op.Config["mcp_servers.0.url"])
+		}
+		if op.Config["mcp_servers.1.url"] != "https://tools-two.example/mcp" {
+			t.Fatalf("%s mcp_servers.1.url = %#v, want second MCP URL", op.Method, op.Config["mcp_servers.1.url"])
+		}
+	}
+}
+
 type testHarness struct {
 	handler  a2asrv.RequestHandler
 	executor *Executor
@@ -154,6 +232,11 @@ type testHarness struct {
 }
 
 func newTestHarness(t *testing.T) *testHarness {
+	t.Helper()
+	return newTestHarnessWithConfig(t, nil)
+}
+
+func newTestHarnessWithConfig(t *testing.T, configure func(*Config)) *testHarness {
 	t.Helper()
 
 	cfg := DefaultConfig()
@@ -166,6 +249,9 @@ func newTestHarness(t *testing.T) *testHarness {
 	cfg.ChildEnv = []string{
 		"GO_WANT_HELPER_PROCESS=1",
 		"FAKE_CODEX_STATE_DIR=" + stateDir,
+	}
+	if configure != nil {
+		configure(&cfg)
 	}
 
 	executor, err := NewExecutor(cfg)
@@ -285,11 +371,15 @@ type fakeThreadState struct {
 }
 
 type fakeOperation struct {
-	Method         string `json:"method"`
-	ThreadID       string `json:"threadId,omitempty"`
-	ParentThreadID string `json:"parentThreadId,omitempty"`
-	Prompt         string `json:"prompt,omitempty"`
-	PID            int    `json:"pid"`
+	Method         string         `json:"method"`
+	ThreadID       string         `json:"threadId,omitempty"`
+	ParentThreadID string         `json:"parentThreadId,omitempty"`
+	Prompt         string         `json:"prompt,omitempty"`
+	Model          string         `json:"model,omitempty"`
+	ApprovalPolicy string         `json:"approvalPolicy,omitempty"`
+	Sandbox        string         `json:"sandbox,omitempty"`
+	Config         map[string]any `json:"config,omitempty"`
+	PID            int            `json:"pid"`
 }
 
 func fakeOperations(t *testing.T, stateDir string) []fakeOperation {
@@ -463,11 +553,28 @@ func (s *fakeCodexServer) handleRequest(env rpcEnvelope) error {
 			"result": map[string]any{"userAgent": "fake-codex/0.2"},
 		})
 	case "thread/start":
+		var params struct {
+			Model          string         `json:"model,omitempty"`
+			ApprovalPolicy string         `json:"approvalPolicy,omitempty"`
+			Sandbox        string         `json:"sandbox,omitempty"`
+			Config         map[string]any `json:"config,omitempty"`
+		}
+		if err := json.Unmarshal(env.Params, &params); err != nil {
+			return err
+		}
 		thread := fakeThreadState{ID: s.newID("thr")}
 		if err := s.saveThread(thread); err != nil {
 			return err
 		}
-		if err := s.logOperation(fakeOperation{Method: "thread/start", ThreadID: thread.ID, PID: os.Getpid()}); err != nil {
+		if err := s.logOperation(fakeOperation{
+			Method:         "thread/start",
+			ThreadID:       thread.ID,
+			Model:          params.Model,
+			ApprovalPolicy: params.ApprovalPolicy,
+			Sandbox:        params.Sandbox,
+			Config:         params.Config,
+			PID:            os.Getpid(),
+		}); err != nil {
 			return err
 		}
 		if err := s.write(map[string]any{
@@ -499,7 +606,11 @@ func (s *fakeCodexServer) handleRequest(env rpcEnvelope) error {
 		})
 	case "thread/fork":
 		var params struct {
-			ThreadID string `json:"threadId"`
+			ThreadID       string         `json:"threadId"`
+			Model          string         `json:"model,omitempty"`
+			ApprovalPolicy string         `json:"approvalPolicy,omitempty"`
+			Sandbox        string         `json:"sandbox,omitempty"`
+			Config         map[string]any `json:"config,omitempty"`
 		}
 		if err := json.Unmarshal(env.Params, &params); err != nil {
 			return err
@@ -519,6 +630,10 @@ func (s *fakeCodexServer) handleRequest(env rpcEnvelope) error {
 			Method:         "thread/fork",
 			ThreadID:       child.ID,
 			ParentThreadID: parent.ID,
+			Model:          params.Model,
+			ApprovalPolicy: params.ApprovalPolicy,
+			Sandbox:        params.Sandbox,
+			Config:         params.Config,
 			PID:            os.Getpid(),
 		}); err != nil {
 			return err

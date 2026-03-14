@@ -1,15 +1,22 @@
 {
-  manifest_version: "0.1.0",
+  manifest_version: "0.3.0",
 
   config_schema: {
     type: "object",
     properties: {
       auth_json: { type: "string", secret: true },
+      model: { type: "string" },
+      model_reasoning_effort: { type: "string", default: "low" },
+      developer_instructions: { type: "string" },
       config_toml: { type: "string" },
       agents_md: { type: "string" },
     },
-    required: ["auth_json"],
+    required: ["auth_json", "model"],
     additionalProperties: false,
+  },
+
+  slots: {
+    tool: { kind: "mcp", multiple: true, optional: true },
   },
 
   program: {
@@ -19,11 +26,18 @@
       "codex-a2a",
       "--listen", ":9001",
       "--default-cwd", "/workspace",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--model", "${config.model}",
+      "--model-reasoning-effort", "${config.model_reasoning_effort}",
+      { when: "config.developer_instructions",
+        argv: ["--developer-instructions", "${config.developer_instructions}"] },
+      { each: "slots.tool",
+        argv: ["--mcp-server-url", "${item.url}"] },
     ],
     mounts: [
       { path: "/home/codex/.codex/auth.json", from: "secret.auth_json" },
       { path: "/home/codex/.codex/config.toml", from: "config.config_toml" },
-      { path: "/workspace/AGENTS.md", from: "config.agents_md" },
+      { path: "/home/codex/.codex/AGENTS.md", from: "config.agents_md" },
     ],
     network: {
       endpoints: [

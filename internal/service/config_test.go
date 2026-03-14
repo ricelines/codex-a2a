@@ -10,6 +10,8 @@ func TestRequestOptionsFromConfig(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.DefaultCwd = "/default"
 	cfg.DefaultModel = "gpt-default"
+	cfg.CodexConfig["model_reasoning_effort"] = "medium"
+	cfg.MCPServerURLs = []string{"https://one.example/mcp", "https://two.example/mcp"}
 
 	got, err := requestOptionsFromConfig(cfg)
 	if err != nil {
@@ -26,6 +28,23 @@ func TestRequestOptionsFromConfig(t *testing.T) {
 	}
 	if got.Sandbox != "read-only" {
 		t.Fatalf("sandbox = %q, want %q", got.Sandbox, "read-only")
+	}
+	if got.CodexConfig["analytics.enabled"] != false {
+		t.Fatalf("analytics.enabled = %#v, want false", got.CodexConfig["analytics.enabled"])
+	}
+	if got.CodexConfig["model_reasoning_effort"] != "medium" {
+		t.Fatalf("model_reasoning_effort = %#v, want %q", got.CodexConfig["model_reasoning_effort"], "medium")
+	}
+	if got.CodexConfig["mcp_servers.0.url"] != "https://one.example/mcp" {
+		t.Fatalf("mcp_servers.0.url = %#v, want first MCP URL", got.CodexConfig["mcp_servers.0.url"])
+	}
+	if got.CodexConfig["mcp_servers.1.url"] != "https://two.example/mcp" {
+		t.Fatalf("mcp_servers.1.url = %#v, want second MCP URL", got.CodexConfig["mcp_servers.1.url"])
+	}
+
+	got.CodexConfig["analytics.enabled"] = true
+	if cfg.CodexConfig["analytics.enabled"] != false {
+		t.Fatalf("requestOptionsFromConfig() returned aliased codex config map")
 	}
 }
 

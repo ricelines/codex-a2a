@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,28 +23,54 @@ func main() {
 	agentName := flag.String("agent-name", cfg.AgentName, "Agent card name")
 	agentDescription := flag.String("agent-description", cfg.AgentDescription, "Agent card description")
 	defaultCwd := flag.String("default-cwd", cfg.DefaultCwd, "Default working directory for new Codex threads")
-	defaultModel := flag.String("default-model", "", "Default Codex model override")
+	var defaultModel flagString
+	defaultModel.value = cfg.DefaultModel
+	flag.Var(&defaultModel, "default-model", "Default Codex model override")
+	var model flagString
+	flag.Var(&model, "model", "Codex model forwarded to new threads")
 	defaultApprovalPolicy := flag.String("default-approval-policy", cfg.DefaultApprovalPolicy, "Default Codex approval policy")
 	defaultSandbox := flag.String("default-sandbox", cfg.DefaultSandbox, "Default Codex sandbox mode")
+	dangerouslyBypassApprovalsAndSandbox := flag.Bool("dangerously-bypass-approvals-and-sandbox", false, "Skip approvals and use danger-full-access for all new Codex threads")
+	modelReasoningEffort := flag.String("model-reasoning-effort", "", "Codex model reasoning effort forwarded to new threads")
+	var developerInstructions flagString
+	flag.Var(&developerInstructions, "developer-instructions", "Codex developer instructions forwarded to new threads")
 	codexCLI := flag.String("codex-cli", cfg.CodexCLI, "Path to the codex CLI used as `codex app-server --listen stdio://`")
 	codexAppServerBin := flag.String("codex-app-server-bin", "", "Optional direct path to a codex-app-server binary")
 	codexClientName := flag.String("codex-client-name", cfg.CodexClientName, "clientInfo.name sent to codex app-server")
 	codexClientTitle := flag.String("codex-client-title", cfg.CodexClientTitle, "clientInfo.title sent to codex app-server")
 	codexClientVersion := flag.String("codex-client-version", cfg.CodexClientVer, "clientInfo.version sent to codex app-server")
+	var mcpServerURLs multiStringFlag
+	flag.Var(&mcpServerURLs, "mcp-server-url", "Register an MCP server URL with an auto-generated numeric id; repeatable")
 	flag.Parse()
 
 	cfg.BaseURL = *baseURL
 	cfg.AgentName = *agentName
 	cfg.AgentDescription = *agentDescription
 	cfg.DefaultCwd = *defaultCwd
-	cfg.DefaultModel = *defaultModel
+	switch {
+	case model.set:
+		cfg.DefaultModel = model.value
+	case defaultModel.set:
+		cfg.DefaultModel = defaultModel.value
+	}
 	cfg.DefaultApprovalPolicy = *defaultApprovalPolicy
 	cfg.DefaultSandbox = *defaultSandbox
+	if *dangerouslyBypassApprovalsAndSandbox {
+		cfg.DefaultApprovalPolicy = "never"
+		cfg.DefaultSandbox = "danger-full-access"
+	}
 	cfg.CodexCLI = *codexCLI
 	cfg.CodexAppServerBin = *codexAppServerBin
 	cfg.CodexClientName = *codexClientName
 	cfg.CodexClientTitle = *codexClientTitle
 	cfg.CodexClientVer = *codexClientVersion
+	cfg.MCPServerURLs = append([]string(nil), mcpServerURLs...)
+	if *modelReasoningEffort != "" {
+		cfg.CodexConfig["model_reasoning_effort"] = *modelReasoningEffort
+	}
+	if developerInstructions.set {
+		cfg.CodexConfig["developer_instructions"] = developerInstructions.value
+	}
 
 	executor, err := service.NewExecutor(cfg)
 	if err != nil {
@@ -105,4 +132,33 @@ func cardBaseURL(cfg service.Config, listenAddr string) string {
 		return "http://127.0.0.1" + listenAddr
 	}
 	return "http://" + listenAddr
+}
+
+type flagString struct {
+	value string
+	set   bool
+}
+
+func (f *flagString) String() string {
+	return f.value
+}
+
+func (f *flagString) Set(value string) error {
+	f.value = value
+	f.set = true
+	return nil
+}
+
+type multiStringFlag []string
+
+func (f *multiStringFlag) String() string {
+	if f == nil {
+		return ""
+	}
+	return strings.Join(*f, ",")
+}
+
+func (f *multiStringFlag) Set(value string) error {
+	*f = append(*f, value)
+	return nil
 }

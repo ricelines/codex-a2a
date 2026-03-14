@@ -104,9 +104,14 @@ Key flags:
 - `--listen`: HTTP listen address for the A2A server
 - `--base-url`: public base URL used in the Agent Card; optional for local use
 - `--default-cwd`: default working directory for new Codex threads
+- `--model`: Codex model forwarded to new threads; alias for `--default-model`
+- `--model-reasoning-effort`: Codex reasoning effort forwarded to new threads
+- `--developer-instructions`: Codex developer instructions forwarded to new threads
 - `--default-model`: optional default model override
 - `--default-approval-policy`: `untrusted`, `on-failure`, `on-request`, or `never`
 - `--default-sandbox`: `read-only`, `workspace-write`, or `danger-full-access`
+- `--dangerously-bypass-approvals-and-sandbox`: convenience alias for `--default-approval-policy never` plus `--default-sandbox danger-full-access`
+- `--mcp-server-url`: repeatable MCP server URL forwarded as `mcp_servers.<index>.url`
 - `--codex-cli`: path to the `codex` CLI
 - `--codex-app-server-bin`: direct path to a `codex-app-server` binary
 

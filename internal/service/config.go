@@ -27,6 +27,9 @@ type Config struct {
 	CodexClientTitle  string
 	CodexClientVer    string
 	ChildEnv          []string
+
+	CodexConfig   map[string]any
+	MCPServerURLs []string
 }
 
 // RequestOptions are derived from server-owned defaults.
@@ -35,6 +38,7 @@ type RequestOptions struct {
 	Model          string
 	ApprovalPolicy string
 	Sandbox        string
+	CodexConfig    map[string]any
 }
 
 func DefaultConfig() Config {
@@ -49,6 +53,13 @@ func DefaultConfig() Config {
 		CodexClientName:       "codex_a2a",
 		CodexClientTitle:      "Codex A2A Wrapper",
 		CodexClientVer:        "0.1.0",
+		CodexConfig: map[string]any{
+			"analytics.enabled":           false,
+			"personality":                 "none",
+			"history.persistence":         "none",
+			"check_for_update_on_startup": false,
+			"commit_attribution":          "",
+		},
 	}
 }
 
@@ -80,6 +91,7 @@ func requestOptionsFromConfig(cfg Config) (RequestOptions, error) {
 		Model:          cfg.DefaultModel,
 		ApprovalPolicy: cfg.DefaultApprovalPolicy,
 		Sandbox:        cfg.DefaultSandbox,
+		CodexConfig:    mergedCodexConfig(cfg.CodexConfig, cfg.MCPServerURLs),
 	}
 
 	if options.Cwd == "" {
@@ -139,4 +151,39 @@ func splitEnv(entries []string) []string {
 		out = append(out, entry)
 	}
 	return out
+}
+
+func mergedCodexConfig(base map[string]any, mcpServerURLs []string) map[string]any {
+	size := len(base) + len(mcpServerURLs)
+	if size == 0 {
+		return nil
+	}
+
+	out := make(map[string]any, size)
+	for key, value := range base {
+		out[key] = cloneConfigValue(value)
+	}
+	for idx, url := range mcpServerURLs {
+		out[fmt.Sprintf("mcp_servers.%d.url", idx)] = url
+	}
+	return out
+}
+
+func cloneConfigValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		cloned := make(map[string]any, len(typed))
+		for key, nested := range typed {
+			cloned[key] = cloneConfigValue(nested)
+		}
+		return cloned
+	case []any:
+		cloned := make([]any, len(typed))
+		for idx, nested := range typed {
+			cloned[idx] = cloneConfigValue(nested)
+		}
+		return cloned
+	default:
+		return typed
+	}
 }

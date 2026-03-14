@@ -28,30 +28,33 @@ type initializeParams struct {
 }
 
 type threadStartParams struct {
-	Cwd                    string `json:"cwd,omitempty"`
-	Model                  string `json:"model,omitempty"`
-	ApprovalPolicy         string `json:"approvalPolicy,omitempty"`
-	Sandbox                string `json:"sandbox,omitempty"`
-	ExperimentalRawEvents  bool   `json:"experimentalRawEvents"`
-	PersistExtendedHistory bool   `json:"persistExtendedHistory"`
+	Cwd                    string         `json:"cwd,omitempty"`
+	Model                  string         `json:"model,omitempty"`
+	ApprovalPolicy         string         `json:"approvalPolicy,omitempty"`
+	Sandbox                string         `json:"sandbox,omitempty"`
+	Config                 map[string]any `json:"config,omitempty"`
+	ExperimentalRawEvents  bool           `json:"experimentalRawEvents"`
+	PersistExtendedHistory bool           `json:"persistExtendedHistory"`
 }
 
 type threadResumeParams struct {
-	ThreadID               string `json:"threadId"`
-	Cwd                    string `json:"cwd,omitempty"`
-	Model                  string `json:"model,omitempty"`
-	ApprovalPolicy         string `json:"approvalPolicy,omitempty"`
-	Sandbox                string `json:"sandbox,omitempty"`
-	PersistExtendedHistory bool   `json:"persistExtendedHistory"`
+	ThreadID               string         `json:"threadId"`
+	Cwd                    string         `json:"cwd,omitempty"`
+	Model                  string         `json:"model,omitempty"`
+	ApprovalPolicy         string         `json:"approvalPolicy,omitempty"`
+	Sandbox                string         `json:"sandbox,omitempty"`
+	Config                 map[string]any `json:"config,omitempty"`
+	PersistExtendedHistory bool           `json:"persistExtendedHistory"`
 }
 
 type threadForkParams struct {
-	ThreadID               string `json:"threadId"`
-	Cwd                    string `json:"cwd,omitempty"`
-	Model                  string `json:"model,omitempty"`
-	ApprovalPolicy         string `json:"approvalPolicy,omitempty"`
-	Sandbox                string `json:"sandbox,omitempty"`
-	PersistExtendedHistory bool   `json:"persistExtendedHistory"`
+	ThreadID               string         `json:"threadId"`
+	Cwd                    string         `json:"cwd,omitempty"`
+	Model                  string         `json:"model,omitempty"`
+	ApprovalPolicy         string         `json:"approvalPolicy,omitempty"`
+	Sandbox                string         `json:"sandbox,omitempty"`
+	Config                 map[string]any `json:"config,omitempty"`
+	PersistExtendedHistory bool           `json:"persistExtendedHistory"`
 }
 
 type threadResponse struct {
