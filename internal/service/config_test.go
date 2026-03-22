@@ -11,6 +11,7 @@ func TestRequestOptionsFromConfig(t *testing.T) {
 	cfg.DefaultCwd = "/default"
 	cfg.DefaultModel = "gpt-default"
 	cfg.CodexConfig["model_reasoning_effort"] = "medium"
+	cfg.ResponsesAPIBaseURL = "http://proxy.internal/v1/"
 	cfg.MCPServerURLs = []string{"https://one.example/mcp", "https://two.example/mcp"}
 
 	got, err := requestOptionsFromConfig(cfg)
@@ -40,6 +41,21 @@ func TestRequestOptionsFromConfig(t *testing.T) {
 	}
 	if got.CodexConfig["mcp_servers.1.url"] != "https://two.example/mcp" {
 		t.Fatalf("mcp_servers.1.url = %#v, want second MCP URL", got.CodexConfig["mcp_servers.1.url"])
+	}
+	if got.CodexConfig["model_provider"] != responsesProxyProviderName {
+		t.Fatalf("model_provider = %#v, want %q", got.CodexConfig["model_provider"], responsesProxyProviderName)
+	}
+	if got.CodexConfig["model_providers."+responsesProxyProviderName+".base_url"] != "http://proxy.internal/v1" {
+		t.Fatalf("responses proxy base_url = %#v, want normalized URL", got.CodexConfig["model_providers."+responsesProxyProviderName+".base_url"])
+	}
+	if got.CodexConfig["model_providers."+responsesProxyProviderName+".wire_api"] != "responses" {
+		t.Fatalf("responses proxy wire_api = %#v, want %q", got.CodexConfig["model_providers."+responsesProxyProviderName+".wire_api"], "responses")
+	}
+	if got.CodexConfig["model_providers."+responsesProxyProviderName+".requires_openai_auth"] != false {
+		t.Fatalf("responses proxy requires_openai_auth = %#v, want false", got.CodexConfig["model_providers."+responsesProxyProviderName+".requires_openai_auth"])
+	}
+	if got.CodexConfig["model_providers."+responsesProxyProviderName+".supports_websockets"] != false {
+		t.Fatalf("responses proxy supports_websockets = %#v, want false", got.CodexConfig["model_providers."+responsesProxyProviderName+".supports_websockets"])
 	}
 
 	got.CodexConfig["analytics.enabled"] = true

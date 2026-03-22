@@ -456,9 +456,12 @@ func TestFakeCodexHelperProcess(t *testing.T) {
 
 func runFakeCodex(stdin io.Reader, stdout io.Writer) error {
 	server := &fakeCodexServer{
-		reader:   bufio.NewReader(stdin),
-		writer:   json.NewEncoder(stdout),
-		stateDir: os.Getenv("FAKE_CODEX_STATE_DIR"),
+		reader:             bufio.NewReader(stdin),
+		writer:             json.NewEncoder(stdout),
+		stateDir:           os.Getenv("FAKE_CODEX_STATE_DIR"),
+		authMethod:         os.Getenv("FAKE_CODEX_AUTH_METHOD"),
+		authToken:          os.Getenv("FAKE_CODEX_AUTH_TOKEN_INITIAL"),
+		refreshedAuthToken: os.Getenv("FAKE_CODEX_AUTH_TOKEN_REFRESHED"),
 	}
 	return server.run()
 }
@@ -468,6 +471,10 @@ type fakeCodexServer struct {
 	writer *json.Encoder
 
 	stateDir string
+
+	authMethod         string
+	authToken          string
+	refreshedAuthToken string
 
 	turnCount    int
 	requestCount int
@@ -641,6 +648,34 @@ func (s *fakeCodexServer) handleRequest(env rpcEnvelope) error {
 		return s.write(map[string]any{
 			"id":     rawID(env.ID),
 			"result": map[string]any{"thread": map[string]any{"id": child.ID}},
+		})
+	case "getAuthStatus":
+		var params struct {
+			IncludeToken bool `json:"includeToken"`
+			RefreshToken bool `json:"refreshToken"`
+		}
+		if err := json.Unmarshal(env.Params, &params); err != nil {
+			return err
+		}
+		if params.RefreshToken && s.refreshedAuthToken != "" {
+			s.authToken = s.refreshedAuthToken
+		}
+
+		var token any
+		if params.IncludeToken && s.authToken != "" {
+			token = s.authToken
+		}
+		authMethod := s.authMethod
+		if authMethod == "" {
+			authMethod = "chatgpt"
+		}
+		return s.write(map[string]any{
+			"id": rawID(env.ID),
+			"result": map[string]any{
+				"authMethod":         authMethod,
+				"authToken":          token,
+				"requiresOpenaiAuth": s.authToken != "",
+			},
 		})
 	case "turn/start":
 		return s.handleTurnStart(env)

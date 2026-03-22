@@ -10,6 +10,7 @@
       developer_instructions: { type: "string" },
       config_toml: { type: "string" },
       agents_md: { type: "string" },
+      workspace_agents_md: { type: "string" },
     },
     required: ["auth_json", "model"],
     additionalProperties: false,
@@ -19,38 +20,32 @@
     tool: { kind: "mcp", multiple: true, optional: true },
   },
 
-  program: {
-    image: "ghcr.io/ricelines/codex-a2a:v0.1",
-    entrypoint: [
-      "/usr/local/bin/docker-entrypoint.sh",
-      "codex-a2a",
-      "--listen", ":9001",
-      "--default-cwd", "/workspace",
-      "--dangerously-bypass-approvals-and-sandbox",
-      "--model", "${config.model}",
-      "--model-reasoning-effort", "${config.model_reasoning_effort}",
-      { when: "config.developer_instructions",
-        argv: ["--developer-instructions", "${config.developer_instructions}"] },
-      { each: "slots.tool",
-        argv: ["--mcp-server-url", "${item.url}"] },
-    ],
-    mounts: [
-      { path: "/home/codex/.codex/auth.json", from: "secret.auth_json" },
-      { path: "/home/codex/.codex/config.toml", from: "config.config_toml" },
-      { path: "/home/codex/.codex/AGENTS.md", from: "config.agents_md" },
-    ],
-    network: {
-      endpoints: [
-        { name: "agent", port: 9001, protocol: "http" },
-      ],
+  components: {
+    auth_proxy: {
+      manifest: "./amber/codex-auth-proxy.json5",
+      config: {
+        auth_json: "${config.auth_json}",
+      },
+    },
+    runtime: {
+      manifest: "./amber/codex-a2a-runtime.json5",
+      config: {
+        model: "${config.model}",
+        model_reasoning_effort: "${config.model_reasoning_effort}",
+        developer_instructions: "${config.developer_instructions}",
+        config_toml: "${config.config_toml}",
+        agents_md: "${config.agents_md}",
+        workspace_agents_md: "${config.workspace_agents_md}",
+      },
     },
   },
 
-  provides: {
-    a2a: { kind: "a2a", endpoint: "agent" },
-  },
+  bindings: [
+    { to: "#runtime.responses_api", from: "#auth_proxy.responses_api" },
+    { to: "#runtime.tool", from: "slots.tool", weak: true },
+  ],
 
   exports: {
-    a2a: "a2a",
+    a2a: "#runtime.a2a",
   },
 }

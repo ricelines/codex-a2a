@@ -106,12 +106,169 @@ func TestRealCodexCreatesDistinctThreadsForFollowUpTasks(t *testing.T) {
 	}
 }
 
+func TestRealCodexUsesTrustedResponsesProxyWithChatGPTAuth(t *testing.T) {
+	bin := findRealCodexBinary(t)
+
+	helperCfg := DefaultConfig()
+	helperCfg.DefaultCwd = t.TempDir()
+	helperCfg.CodexAppServerBin = os.Args[0]
+	helperCfg.CodexCLI = ""
+	helperCfg.CodexArgs = []string{"-test.run=TestFakeCodexHelperProcess", "--"}
+	helperCfg.ChildEnv = []string{
+		"GO_WANT_HELPER_PROCESS=1",
+		"FAKE_CODEX_AUTH_TOKEN_INITIAL=" + makeChatGPTAccessToken(t, "org-initial"),
+		"FAKE_CODEX_AUTH_TOKEN_REFRESHED=" + makeChatGPTAccessToken(t, "org-refreshed"),
+	}
+
+	var mu sync.Mutex
+	var authHeaders []string
+	var accountHeaders []string
+	upstream := newLoopbackHTTPServer(t, http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		mu.Lock()
+		authHeaders = append(authHeaders, req.Header.Get("Authorization"))
+		accountHeaders = append(accountHeaders, req.Header.Get("ChatGPT-Account-Id"))
+		call := len(authHeaders)
+		mu.Unlock()
+
+		if req.Method != http.MethodPost || req.URL.Path != "/backend-api/codex/responses" {
+			t.Fatalf("upstream got %s %s, want POST /backend-api/codex/responses", req.Method, req.URL.Path)
+		}
+		if call == 1 {
+			http.Error(rw, "expired", http.StatusUnauthorized)
+			return
+		}
+
+		rw.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(rw, fmt.Sprintf(
+			"event: response.created\n"+
+				"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}\n\n"+
+				"event: response.output_item.done\n"+
+				"data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"msg-1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"proxied real codex\"}]}}\n\n"+
+				"event: response.completed\n"+
+				"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\",\"output\":[{\"id\":\"msg-1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"proxied real codex\"}]}]}}\n\n",
+		))
+	}))
+	defer upstream.Close()
+
+	authProxyHandler, authProxyCloser, err := NewCodexAuthProxyHandler(
+		context.Background(),
+		helperCfg,
+		"http://api.invalid/v1/responses",
+		upstream.URL+"/backend-api/codex/responses",
+	)
+	if err != nil {
+		t.Fatalf("NewCodexAuthProxyHandler() error = %v", err)
+	}
+	defer func() {
+		if err := authProxyCloser.Close(); err != nil {
+			t.Fatalf("authProxyCloser.Close() error = %v", err)
+		}
+	}()
+	authProxy := newLoopbackHTTPServer(t, authProxyHandler)
+
+	h := newRealCodexHarness(t, realCodexHarnessOptions{
+		Binary:              bin,
+		Workspace:           t.TempDir(),
+		ResponsesAPIBaseURL: authProxy.URL + "/v1",
+		RequireOpenAIAuth:   false,
+	})
+
+	ctx, cancel := context.WithTimeout(newAuthedContext(), 30*time.Second)
+	defer cancel()
+
+	task := mustSendTask(ctx, t, h.handler, a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "hello through trusted proxy"}))
+	if task.Status.State != a2a.TaskStateCompleted {
+		t.Fatalf("task.Status.State = %s, want %s; status message=%q", task.Status.State, a2a.TaskStateCompleted, statusMessageText(task))
+	}
+	assertTaskArtifactContains(t, task, "proxied real codex")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(authHeaders) != 2 {
+		t.Fatalf("upstream request count = %d, want 2", len(authHeaders))
+	}
+	if authHeaders[0] != "Bearer "+makeChatGPTAccessToken(t, "org-initial") {
+		t.Fatalf("first Authorization header = %q, want initial token", authHeaders[0])
+	}
+	if authHeaders[1] != "Bearer "+makeChatGPTAccessToken(t, "org-refreshed") {
+		t.Fatalf("second Authorization header = %q, want refreshed token", authHeaders[1])
+	}
+	if accountHeaders[0] != "org-initial" {
+		t.Fatalf("first ChatGPT-Account-Id = %q, want %q", accountHeaders[0], "org-initial")
+	}
+	if accountHeaders[1] != "org-refreshed" {
+		t.Fatalf("second ChatGPT-Account-Id = %q, want %q", accountHeaders[1], "org-refreshed")
+	}
+}
+
+func TestRealCodexUsesTrustedResponsesProxyWithAPIKeyAuth(t *testing.T) {
+	bin := findRealCodexBinary(t)
+
+	helperHome := t.TempDir()
+	if err := writeMockResponsesConfig(filepath.Join(helperHome, "config.toml"), "", true, false); err != nil {
+		t.Fatalf("writeMockResponsesConfig() error = %v", err)
+	}
+	if err := writeFakeAPIKeyAuth(filepath.Join(helperHome, "auth.json"), "sk-test-key"); err != nil {
+		t.Fatalf("writeFakeAPIKeyAuth() error = %v", err)
+	}
+
+	helperCfg := DefaultConfig()
+	helperCfg.DefaultCwd = t.TempDir()
+	helperCfg.CodexCLI = bin
+	helperCfg.ChildEnv = []string{"CODEX_HOME=" + helperHome}
+
+	recorder := newResponsesRecorder("proxied api key")
+	upstream := recorder.server(t)
+	defer upstream.Close()
+
+	authProxyHandler, authProxyCloser, err := NewCodexAuthProxyHandler(
+		context.Background(),
+		helperCfg,
+		upstream.URL+"/v1/responses",
+		"http://chatgpt.invalid/backend-api/codex/responses",
+	)
+	if err != nil {
+		t.Fatalf("NewCodexAuthProxyHandler() error = %v", err)
+	}
+	defer func() {
+		if err := authProxyCloser.Close(); err != nil {
+			t.Fatalf("authProxyCloser.Close() error = %v", err)
+		}
+	}()
+	authProxy := newLoopbackHTTPServer(t, authProxyHandler)
+
+	h := newRealCodexHarness(t, realCodexHarnessOptions{
+		Binary:              bin,
+		Workspace:           t.TempDir(),
+		ResponsesAPIBaseURL: authProxy.URL + "/v1",
+		RequireOpenAIAuth:   false,
+	})
+
+	ctx, cancel := context.WithTimeout(newAuthedContext(), 30*time.Second)
+	defer cancel()
+
+	task := mustSendTask(ctx, t, h.handler, a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "hello through trusted proxy"}))
+	if task.Status.State != a2a.TaskStateCompleted {
+		t.Fatalf("task.Status.State = %s, want %s; status message=%q", task.Status.State, a2a.TaskStateCompleted, statusMessageText(task))
+	}
+	assertTaskArtifactContains(t, task, "proxied api key")
+
+	req := recorder.singleRequest(t)
+	if got := req.Header.Get("Authorization"); got != "Bearer sk-test-key" {
+		t.Fatalf("Authorization header = %q, want %q", got, "Bearer sk-test-key")
+	}
+	if got := req.Header.Get("ChatGPT-Account-Id"); got != "" {
+		t.Fatalf("ChatGPT-Account-Id = %q, want empty for API-key auth", got)
+	}
+}
+
 type realCodexHarnessOptions struct {
-	Binary            string
-	Workspace         string
-	ModelProviderBase string
-	RequireOpenAIAuth bool
-	EnableAgentsMD    bool
+	Binary              string
+	Workspace           string
+	ModelProviderBase   string
+	ResponsesAPIBaseURL string
+	RequireOpenAIAuth   bool
+	EnableAgentsMD      bool
 }
 
 func newRealCodexHarness(t *testing.T, opts realCodexHarnessOptions) *testHarness {
@@ -130,6 +287,7 @@ func newRealCodexHarness(t *testing.T, opts realCodexHarnessOptions) *testHarnes
 	cfg := DefaultConfig()
 	cfg.DefaultCwd = opts.Workspace
 	cfg.CodexCLI = opts.Binary
+	cfg.ResponsesAPIBaseURL = opts.ResponsesAPIBaseURL
 	cfg.ChildEnv = []string{"CODEX_HOME=" + codexHome}
 
 	executor, err := NewExecutor(cfg)
@@ -170,20 +328,15 @@ func writeMockResponsesConfig(path, serverURL string, requireOpenAIAuth, enableA
 	if enableAgentsMD {
 		featureBlock = "child_agents_md = true\n"
 	}
-	requiresLine := ""
-	if requireOpenAIAuth {
-		requiresLine = "requires_openai_auth = true\n"
-	}
-	config := fmt.Sprintf(`
-model = "mock-model"
-approval_policy = "never"
-sandbox_mode = "read-only"
-enable_request_compression = false
-model_provider = "mock_provider"
-
-[features]
-%s
-
+	providerSelection := ""
+	providerBlock := ""
+	if serverURL != "" {
+		requiresLine := ""
+		if requireOpenAIAuth {
+			requiresLine = "requires_openai_auth = true\n"
+		}
+		providerSelection = "model_provider = \"mock_provider\"\n"
+		providerBlock = fmt.Sprintf(`
 [model_providers.mock_provider]
 name = "Mock provider for test"
 base_url = "%s/v1"
@@ -191,7 +344,19 @@ wire_api = "responses"
 request_max_retries = 0
 stream_max_retries = 0
 %s
-`, featureBlock, serverURL, requiresLine)
+`, serverURL, requiresLine)
+	}
+	config := fmt.Sprintf(`
+model = "mock-model"
+approval_policy = "never"
+sandbox_mode = "read-only"
+enable_request_compression = false
+%s
+
+[features]
+%s
+%s
+`, providerSelection, featureBlock, providerBlock)
 	return os.WriteFile(path, []byte(strings.TrimSpace(config)+"\n"), 0o644)
 }
 

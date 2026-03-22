@@ -19,6 +19,7 @@ type Config struct {
 	DefaultModel          string
 	DefaultApprovalPolicy string
 	DefaultSandbox        string
+	ResponsesAPIBaseURL   string
 
 	CodexCLI          string
 	CodexAppServerBin string
@@ -40,6 +41,8 @@ type RequestOptions struct {
 	Sandbox        string
 	CodexConfig    map[string]any
 }
+
+const responsesProxyProviderName = "amber_responses_proxy"
 
 func DefaultConfig() Config {
 	cwd, _ := os.Getwd()
@@ -91,7 +94,7 @@ func requestOptionsFromConfig(cfg Config) (RequestOptions, error) {
 		Model:          cfg.DefaultModel,
 		ApprovalPolicy: cfg.DefaultApprovalPolicy,
 		Sandbox:        cfg.DefaultSandbox,
-		CodexConfig:    mergedCodexConfig(cfg.CodexConfig, cfg.MCPServerURLs),
+		CodexConfig:    mergedCodexConfig(cfg.CodexConfig, cfg.MCPServerURLs, cfg.ResponsesAPIBaseURL),
 	}
 
 	if options.Cwd == "" {
@@ -153,8 +156,11 @@ func splitEnv(entries []string) []string {
 	return out
 }
 
-func mergedCodexConfig(base map[string]any, mcpServerURLs []string) map[string]any {
+func mergedCodexConfig(base map[string]any, mcpServerURLs []string, responsesAPIBaseURL string) map[string]any {
 	size := len(base) + len(mcpServerURLs)
+	if responsesAPIBaseURL != "" {
+		size += 6
+	}
 	if size == 0 {
 		return nil
 	}
@@ -165,6 +171,15 @@ func mergedCodexConfig(base map[string]any, mcpServerURLs []string) map[string]a
 	}
 	for idx, url := range mcpServerURLs {
 		out[fmt.Sprintf("mcp_servers.%d.url", idx)] = url
+	}
+	if responsesAPIBaseURL != "" {
+		baseURL := strings.TrimRight(responsesAPIBaseURL, "/")
+		out["model_provider"] = responsesProxyProviderName
+		out[fmt.Sprintf("model_providers.%s.name", responsesProxyProviderName)] = "Amber Responses Proxy"
+		out[fmt.Sprintf("model_providers.%s.base_url", responsesProxyProviderName)] = baseURL
+		out[fmt.Sprintf("model_providers.%s.wire_api", responsesProxyProviderName)] = "responses"
+		out[fmt.Sprintf("model_providers.%s.requires_openai_auth", responsesProxyProviderName)] = false
+		out[fmt.Sprintf("model_providers.%s.supports_websockets", responsesProxyProviderName)] = false
 	}
 	return out
 }

@@ -1,0 +1,59 @@
+{
+  manifest_version: "0.3.0",
+
+  config_schema: {
+    type: "object",
+    properties: {
+      model: { type: "string" },
+      model_reasoning_effort: { type: "string", default: "low" },
+      developer_instructions: { type: "string" },
+      config_toml: { type: "string" },
+      agents_md: { type: "string" },
+      workspace_agents_md: { type: "string" },
+    },
+    required: ["model"],
+    additionalProperties: false,
+  },
+
+  slots: {
+    tool: { kind: "mcp", multiple: true, optional: true },
+    responses_api: { kind: "http" },
+  },
+
+  program: {
+    image: "ghcr.io/ricelines/codex-a2a:v0.1",
+    entrypoint: [
+      "/usr/local/bin/docker-entrypoint.sh",
+      "codex-a2a",
+      "--listen", ":9001",
+      "--default-cwd", "/workspace",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--model", "${config.model}",
+      "--model-reasoning-effort", "${config.model_reasoning_effort}",
+      "--responses-api-base-url", "${slots.responses_api.url}/v1",
+      { when: "config.developer_instructions",
+        argv: ["--developer-instructions", "${config.developer_instructions}"] },
+      { each: "slots.tool",
+        argv: ["--mcp-server-url", "${item.url}"] },
+    ],
+    mounts: [
+      { path: "/home/codex/.codex/config.toml", from: "config.config_toml" },
+      { path: "/home/codex/.codex/AGENTS.md", from: "config.agents_md" },
+      { when: "config.workspace_agents_md",
+        path: "/workspace/AGENTS.md", from: "config.workspace_agents_md" },
+    ],
+    network: {
+      endpoints: [
+        { name: "agent", port: 9001, protocol: "http" },
+      ],
+    },
+  },
+
+  provides: {
+    a2a: { kind: "a2a", endpoint: "agent" },
+  },
+
+  exports: {
+    a2a: "provides.a2a",
+  },
+}

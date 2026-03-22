@@ -1,0 +1,38 @@
+{
+  manifest_version: "0.3.0",
+
+  config_schema: {
+    type: "object",
+    properties: {
+      auth_json: { type: "string", secret: true },
+    },
+    required: ["auth_json"],
+    additionalProperties: false,
+  },
+
+  program: {
+    image: "ghcr.io/ricelines/codex-a2a:v0.1",
+    entrypoint: [
+      "/usr/local/bin/docker-entrypoint.sh",
+      "codex-a2a",
+      "--mode", "auth-proxy",
+      "--listen", ":9002",
+    ],
+    mounts: [
+      { path: "/home/codex/.codex/auth.json", from: "config.auth_json" },
+    ],
+    network: {
+      endpoints: [
+        { name: "responses", port: 9002, protocol: "http" },
+      ],
+    },
+  },
+
+  provides: {
+    responses_api: { kind: "http", endpoint: "responses" },
+  },
+
+  exports: {
+    responses_api: "provides.responses_api",
+  },
+}

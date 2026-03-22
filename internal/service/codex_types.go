@@ -27,6 +27,17 @@ type initializeParams struct {
 	} `json:"capabilities,omitempty"`
 }
 
+type getAuthStatusParams struct {
+	IncludeToken *bool `json:"includeToken,omitempty"`
+	RefreshToken *bool `json:"refreshToken,omitempty"`
+}
+
+type getAuthStatusResponse struct {
+	AuthMethod         *string `json:"authMethod,omitempty"`
+	AuthToken          *string `json:"authToken,omitempty"`
+	RequiresOpenAIAuth *bool   `json:"requiresOpenaiAuth,omitempty"`
+}
+
 type threadStartParams struct {
 	Cwd                    string         `json:"cwd,omitempty"`
 	Model                  string         `json:"model,omitempty"`
