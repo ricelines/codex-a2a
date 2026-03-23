@@ -13,13 +13,16 @@
   program: {
     image: "ghcr.io/ricelines/codex-a2a:v0.1",
     entrypoint: [
-      "/usr/local/bin/docker-entrypoint.sh",
-      "codex-a2a",
+      "/usr/local/bin/codex-a2a",
       "--mode", "auth-proxy",
       "--listen", ":9002",
     ],
+    env: {
+      HOME: "/tmp/codex-home",
+      CODEX_HOME: "/tmp/codex-home/.codex",
+    },
     mounts: [
-      { path: "/home/codex/.codex/auth.json", from: "config.auth_json" },
+      { path: "/tmp/codex-home/.codex/auth.json", from: "config.auth_json" },
     ],
     network: {
       endpoints: [

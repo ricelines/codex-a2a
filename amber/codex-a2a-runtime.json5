@@ -23,8 +23,7 @@
   program: {
     image: "ghcr.io/ricelines/codex-a2a:v0.1",
     entrypoint: [
-      "/usr/local/bin/docker-entrypoint.sh",
-      "codex-a2a",
+      "/usr/local/bin/codex-a2a",
       "--listen", ":9001",
       "--default-cwd", "/workspace",
       "--dangerously-bypass-approvals-and-sandbox",
@@ -36,9 +35,13 @@
       { each: "slots.tool",
         argv: ["--mcp-server-url", "${item.url}"] },
     ],
+    env: {
+      HOME: "/tmp/codex-home",
+      CODEX_HOME: "/tmp/codex-home/.codex",
+    },
     mounts: [
-      { path: "/home/codex/.codex/config.toml", from: "config.config_toml" },
-      { path: "/home/codex/.codex/AGENTS.md", from: "config.agents_md" },
+      { path: "/tmp/codex-home/.codex/config.toml", from: "config.config_toml" },
+      { path: "/tmp/codex-home/.codex/AGENTS.md", from: "config.agents_md" },
       { when: "config.workspace_agents_md",
         path: "/workspace/AGENTS.md", from: "config.workspace_agents_md" },
     ],
