@@ -101,6 +101,7 @@ go run ./cmd/codex-a2a \
 
 Key flags:
 
+- `--mode`: `a2a`, `auth-proxy`, or `mock-responses`
 - `--listen`: HTTP listen address for the A2A server
 - `--base-url`: public base URL used in the Agent Card; optional for local use
 - `--default-cwd`: default working directory for new Codex threads
@@ -114,6 +115,8 @@ Key flags:
 - `--mcp-server-url`: repeatable MCP server URL forwarded as `mcp_servers.<index>.url`
 - `--codex-cli`: path to the `codex` CLI
 - `--codex-app-server-bin`: direct path to a `codex-app-server` binary
+- `--mock-responses-text`: assistant text emitted by `--mode mock-responses` when no explicit item JSON is configured
+- `--mock-responses-item-json`: full JSON object emitted as the single Responses API output item in `--mode mock-responses`
 
 Once running:
 
@@ -123,6 +126,24 @@ Once running:
 The wrapper does not accept caller-supplied Codex session overrides through A2A
 metadata. Working directory, model selection, approval policy, and sandbox mode
 are server-owned defaults configured at startup.
+
+## Amber manifests
+
+This repo ships a few Amber manifests with distinct responsibilities:
+
+- `amber.json5`: convenience root manifest for a real Codex-backed agent; composes `codex-auth-proxy` with `codex-a2a-runtime`
+- `amber/codex-a2a-runtime.json5`: bare `codex-a2a` runtime that requires a `responses_api` slot
+- `amber/codex-auth-proxy.json5`: Responses API provider backed by a real Codex `auth.json`
+- `amber/mock-responses-api.json5`: deterministic mock Responses API provider
+- `amber/mock-codex-a2a.json5`: convenience root manifest for a mock-backed agent; composes `mock-responses-api` with `codex-a2a-runtime`
+
+The important boundary is that `codex-a2a-runtime` always consumes a `responses_api`
+capability. Real auth and mock behavior are separate provider components rather than
+alternate routing paths hidden inside the runtime config.
+
+If you want a no-token smoke setup in Amber, use `amber/mock-codex-a2a.json5`. If you
+want to assemble your own scenario, bind either `amber/codex-auth-proxy.json5` or
+`amber/mock-responses-api.json5` into `amber/codex-a2a-runtime.json5`.
 
 ## Task behavior
 

@@ -1,0 +1,40 @@
+{
+  manifest_version: "0.3.0",
+
+  config_schema: {
+    type: "object",
+    properties: {
+      response_text: { type: "string", default: "ok" },
+      response_item_json: {
+        type: "string",
+        description: "Optional full JSON object to emit as the single Responses API output item. When unset, the mock emits one assistant message using response_text.",
+      },
+    },
+    additionalProperties: false,
+  },
+
+  program: {
+    image: "ghcr.io/ricelines/codex-a2a:v0.1",
+    entrypoint: [
+      "/usr/local/bin/codex-a2a",
+      "--mode", "mock-responses",
+      "--listen", ":9002",
+      "--mock-responses-text", "${config.response_text}",
+      { when: "config.response_item_json",
+        argv: ["--mock-responses-item-json", "${config.response_item_json}"] },
+    ],
+    network: {
+      endpoints: [
+        { name: "responses", port: 9002, protocol: "http" },
+      ],
+    },
+  },
+
+  provides: {
+    responses_api: { kind: "http", endpoint: "responses" },
+  },
+
+  exports: {
+    responses_api: "provides.responses_api",
+  },
+}

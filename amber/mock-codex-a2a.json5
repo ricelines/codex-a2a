@@ -1,0 +1,53 @@
+{
+  manifest_version: "0.3.0",
+
+  config_schema: {
+    type: "object",
+    properties: {
+      model: { type: "string" },
+      model_reasoning_effort: { type: "string", default: "low" },
+      developer_instructions: { type: "string" },
+      config_toml: { type: "string" },
+      agents_md: { type: "string" },
+      workspace_agents_md: { type: "string" },
+      response_text: { type: "string", default: "ok" },
+      response_item_json: { type: "string" },
+    },
+    required: ["model"],
+    additionalProperties: false,
+  },
+
+  slots: {
+    tool: { kind: "mcp", multiple: true, optional: true },
+  },
+
+  components: {
+    mock_responses: {
+      manifest: "./mock-responses-api.json5",
+      config: {
+        response_text: "${config.response_text}",
+        response_item_json: "${config.response_item_json}",
+      },
+    },
+    runtime: {
+      manifest: "./codex-a2a-runtime.json5",
+      config: {
+        model: "${config.model}",
+        model_reasoning_effort: "${config.model_reasoning_effort}",
+        developer_instructions: "${config.developer_instructions}",
+        config_toml: "${config.config_toml}",
+        agents_md: "${config.agents_md}",
+        workspace_agents_md: "${config.workspace_agents_md}",
+      },
+    },
+  },
+
+  bindings: [
+    { to: "#runtime.responses_api", from: "#mock_responses.responses_api" },
+    { to: "#runtime.tool", from: "slots.tool", weak: true },
+  ],
+
+  exports: {
+    a2a: "#runtime.a2a",
+  },
+}

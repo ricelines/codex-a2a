@@ -18,7 +18,7 @@ import (
 func main() {
 	cfg := service.DefaultConfig()
 
-	mode := flag.String("mode", "a2a", "Runtime mode: a2a or auth-proxy")
+	mode := flag.String("mode", "a2a", "Runtime mode: a2a, auth-proxy, or mock-responses")
 	listenAddr := flag.String("listen", "127.0.0.1:9001", "TCP listen address")
 	baseURL := flag.String("base-url", "", "Public base URL used in the agent card")
 	agentName := flag.String("agent-name", cfg.AgentName, "Agent card name")
@@ -43,6 +43,8 @@ func main() {
 	codexClientName := flag.String("codex-client-name", cfg.CodexClientName, "clientInfo.name sent to codex app-server")
 	codexClientTitle := flag.String("codex-client-title", cfg.CodexClientTitle, "clientInfo.title sent to codex app-server")
 	codexClientVersion := flag.String("codex-client-version", cfg.CodexClientVer, "clientInfo.version sent to codex app-server")
+	mockResponsesText := flag.String("mock-responses-text", "ok", "Assistant text emitted by mock-responses mode when no explicit item JSON is configured")
+	mockResponsesItemJSON := flag.String("mock-responses-item-json", "", "Full JSON object emitted as the single response output item in mock-responses mode")
 	var mcpServerURLs multiStringFlag
 	flag.Var(&mcpServerURLs, "mcp-server-url", "Register an MCP server URL with an auto-generated numeric id; repeatable")
 	flag.Parse()
@@ -82,6 +84,8 @@ func main() {
 		runA2AServer(cfg, *listenAddr)
 	case "auth-proxy":
 		runAuthProxy(cfg, *listenAddr, *authProxyAPIKeyUpstreamURL, *authProxyUpstreamURL)
+	case "mock-responses":
+		runMockResponses(*listenAddr, *mockResponsesText, *mockResponsesItemJSON)
 	default:
 		log.Fatalf("unsupported mode %q", *mode)
 	}
@@ -126,6 +130,14 @@ func runAuthProxy(cfg service.Config, listenAddr string, apiKeyUpstreamURL strin
 			log.Printf("close auth proxy helper: %v", err)
 		}
 	}()
+	serveUntilSignal(&http.Server{Addr: listenAddr, Handler: handler}, listenAddr)
+}
+
+func runMockResponses(listenAddr string, responseText string, responseItemJSON string) {
+	handler, err := service.NewMockResponsesHandler(responseText, responseItemJSON)
+	if err != nil {
+		log.Fatalf("configure mock responses handler: %v", err)
+	}
 	serveUntilSignal(&http.Server{Addr: listenAddr, Handler: handler}, listenAddr)
 }
 
