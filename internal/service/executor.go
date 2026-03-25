@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/a2aproject/a2a-go/a2a"
 	"github.com/a2aproject/a2a-go/a2asrv"
@@ -315,6 +316,7 @@ func (e *Executor) handleNotification(reqCtx *a2asrv.RequestContext, runtime *ta
 		if err != nil {
 			return nil, false, err
 		}
+		runtime.noteItemStarted(n.Item.ID, time.Now().UTC())
 		return startArtifactEvents(reqCtx, runtime, n.Item), false, nil
 	case "item/completed":
 		n, err := decodeJSON[itemNotification](msg.Params)
@@ -530,15 +532,20 @@ func artifactID(prefix, itemID string) string {
 
 func codexTaskMeta(runtime *taskRuntime) map[string]any {
 	return map[string]any{
-		"threadId": runtime.Session.ThreadID,
-		"turnId":   runtime.TurnID,
+		"threadId":      runtime.Session.ThreadID,
+		"turnId":        runtime.TurnID,
+		"taskStartedAt": runtime.StartedAt.UTC().Format(time.RFC3339Nano),
 	}
 }
 
 func artifactMeta(runtime *taskRuntime, itemID, itemType string) map[string]any {
 	meta := codexTaskMeta(runtime)
+	meta["emittedAt"] = time.Now().UTC().Format(time.RFC3339Nano)
 	if itemID != "" {
 		meta["itemId"] = itemID
+		if startedAt, ok := runtime.itemStartTime(itemID); ok {
+			meta["itemStartedAt"] = startedAt.UTC().Format(time.RFC3339Nano)
+		}
 	}
 	if itemType != "" {
 		meta["itemType"] = itemType

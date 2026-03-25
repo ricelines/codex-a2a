@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/a2aproject/a2a-go/a2a"
 )
@@ -33,6 +34,7 @@ type taskRuntime struct {
 	ContextID string
 	TurnID    string
 	Session   *taskSession
+	StartedAt time.Time
 
 	cancelRequested atomic.Bool
 
@@ -41,6 +43,7 @@ type taskRuntime struct {
 	assistantTexts  map[string]string
 	commandOutputs  map[string]string
 	fileChangeDiffs map[string]string
+	itemStartedAt   map[string]time.Time
 }
 
 func newTaskRuntime(taskID a2a.TaskID, contextID string, session *taskSession) *taskRuntime {
@@ -48,9 +51,11 @@ func newTaskRuntime(taskID a2a.TaskID, contextID string, session *taskSession) *
 		TaskID:          taskID,
 		ContextID:       contextID,
 		Session:         session,
+		StartedAt:       time.Now().UTC(),
 		assistantTexts:  make(map[string]string),
 		commandOutputs:  make(map[string]string),
 		fileChangeDiffs: make(map[string]string),
+		itemStartedAt:   make(map[string]time.Time),
 	}
 }
 
@@ -103,6 +108,25 @@ func (t *taskRuntime) fileChangeDiff(itemID string) string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.fileChangeDiffs[itemID]
+}
+
+func (t *taskRuntime) noteItemStarted(itemID string, startedAt time.Time) {
+	if itemID == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if _, ok := t.itemStartedAt[itemID]; ok {
+		return
+	}
+	t.itemStartedAt[itemID] = startedAt
+}
+
+func (t *taskRuntime) itemStartTime(itemID string) (time.Time, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	startedAt, ok := t.itemStartedAt[itemID]
+	return startedAt, ok
 }
 
 type taskSession struct {
