@@ -34,7 +34,7 @@ func TestExecutorFileApprovalRoundTrip(t *testing.T) {
 	}
 	assertHasArtifactText(t, secondRun, "hello.txt")
 	assertHasArtifactText(t, secondRun, "file approval handled")
-	assertHasTaskState(t, secondRun, a2a.TaskStateCompleted)
+	assertHasTaskState(t, secondRun, a2a.TaskStateInputRequired)
 }
 
 func TestExecutorElicitationRoundTrip(t *testing.T) {
@@ -66,7 +66,7 @@ func TestExecutorElicitationRoundTrip(t *testing.T) {
 		t.Fatalf("second OnSendMessageStream() error = %v", err)
 	}
 	assertHasArtifactText(t, secondRun, "elicitation accepted")
-	assertHasTaskState(t, secondRun, a2a.TaskStateCompleted)
+	assertHasTaskState(t, secondRun, a2a.TaskStateInputRequired)
 }
 
 func TestExecutorLinkedContextsUseReferenceTaskBranch(t *testing.T) {
@@ -134,16 +134,37 @@ func TestExecutorParallelBranchesRetainSeparateState(t *testing.T) {
 	assertTaskArtifactDoesNotContain(t, resultB, "REMEMBER child-a")
 }
 
-func TestExecutorRejectsTerminalTaskReuse(t *testing.T) {
+func TestExecutorContinuesPausedTaskOnSameThread(t *testing.T) {
 	h := newTestHarness(t)
 	ctx, cancel := context.WithTimeout(newAuthedContext(), 10*time.Second)
 	defer cancel()
 
-	root := mustSendTask(ctx, t, h.handler, a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "hello"}))
-	reuse := a2a.NewMessageForTask(a2a.MessageRoleUser, root.TaskInfo(), a2a.TextPart{Text: "reuse"})
+	root := mustSendTask(ctx, t, h.handler, a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "REMEMBER root"}))
+	reuse := a2a.NewMessageForTask(a2a.MessageRoleUser, root.TaskInfo(), a2a.TextPart{Text: "WHAT_DO_YOU_REMEMBER"})
 
-	if _, err := h.handler.OnSendMessage(ctx, &a2a.MessageSendParams{Message: reuse}); err == nil {
-		t.Fatal("OnSendMessage() unexpectedly succeeded when reusing a completed task")
+	result := mustSendTask(ctx, t, h.handler, reuse)
+	if result.ID != root.ID {
+		t.Fatalf("result.ID = %s, want %s", result.ID, root.ID)
+	}
+	assertTaskArtifactContains(t, result, "REMEMBER root")
+	if taskMetaValue(result, "threadId") != taskMetaValue(root, "threadId") {
+		t.Fatalf("result threadId = %v, want reuse of %v", taskMetaValue(result, "threadId"), taskMetaValue(root, "threadId"))
+	}
+
+	var starts, forks int
+	for _, op := range fakeOperations(t, h.stateDir) {
+		switch op.Method {
+		case "turn/start":
+			starts++
+		case "thread/fork":
+			forks++
+		}
+	}
+	if starts != 2 {
+		t.Fatalf("turn/start count = %d, want 2", starts)
+	}
+	if forks != 0 {
+		t.Fatalf("thread/fork count = %d, want 0", forks)
 	}
 }
 

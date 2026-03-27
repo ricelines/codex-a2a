@@ -95,7 +95,14 @@ func (e *Executor) execute(
 		if err != nil {
 			return err
 		}
-		return e.resumeInputRequired(ctx, reqCtx, runtime, queue)
+		if runtime.pendingRequest() != nil {
+			return e.resumeInputRequired(ctx, reqCtx, runtime, queue)
+		}
+		input, err := codexInputsFromMessage(reqCtx.Message)
+		if err != nil {
+			return err
+		}
+		return e.startNewTurn(ctx, reqCtx, runtime, options, input, queue)
 	default:
 		return fmt.Errorf("task %s is in state %s; only INPUT_REQUIRED tasks may be continued", reqCtx.TaskID, reqCtx.StoredTask.Status.State)
 	}
@@ -127,7 +134,7 @@ func (e *Executor) startNewTurn(
 		return fmt.Errorf("decode turn/start response: %w", err)
 	}
 
-	runtime.TurnID = resp.Turn.ID
+	runtime.startTurn(resp.Turn.ID)
 	if err := queue.Write(ctx, statusWithMeta(reqCtx, a2a.TaskStateWorking, nil, codexTaskMeta(runtime))); err != nil {
 		return err
 	}
@@ -194,7 +201,7 @@ func (e *Executor) consumeTurn(
 			continue
 		}
 
-		events, terminal, err := e.handleNotification(reqCtx, runtime, msg)
+		events, outcome, err := e.handleNotification(reqCtx, runtime, msg)
 		if err != nil {
 			e.broker.finishTask(reqCtx.TaskID)
 			return err
@@ -202,12 +209,25 @@ func (e *Executor) consumeTurn(
 		if err := writeEvents(ctx, queue, events); err != nil {
 			return err
 		}
-		if terminal {
+		switch outcome {
+		case turnOutcomeContinue:
+			continue
+		case turnOutcomePause:
+			return nil
+		case turnOutcomeFinish:
 			e.broker.finishTask(reqCtx.TaskID)
 			return nil
 		}
 	}
 }
+
+type turnOutcome int
+
+const (
+	turnOutcomeContinue turnOutcome = iota
+	turnOutcomePause
+	turnOutcomeFinish
+)
 
 func (e *Executor) handleServerRequest(reqCtx *a2asrv.RequestContext, runtime *taskRuntime, msg incomingMessage) (*pendingRequest, []a2a.Event, bool, error) {
 	switch msg.Method {
@@ -240,94 +260,95 @@ func (e *Executor) handleServerRequest(reqCtx *a2asrv.RequestContext, runtime *t
 	}
 }
 
-func (e *Executor) handleNotification(reqCtx *a2asrv.RequestContext, runtime *taskRuntime, msg incomingMessage) ([]a2a.Event, bool, error) {
+func (e *Executor) handleNotification(reqCtx *a2asrv.RequestContext, runtime *taskRuntime, msg incomingMessage) ([]a2a.Event, turnOutcome, error) {
 	switch msg.Method {
 	case "turn/started":
-		return nil, false, nil
+		return nil, turnOutcomeContinue, nil
 	case "turn/completed":
 		n, err := decodeJSON[turnCompletedNotification](msg.Params)
 		if err != nil {
-			return nil, false, err
+			return nil, turnOutcomeContinue, err
 		}
 		switch n.Turn.Status {
 		case "completed":
-			return []a2a.Event{statusWithMeta(reqCtx, a2a.TaskStateCompleted, nil, codexTaskMeta(runtime))}, true, nil
+			runtime.finishTurnForNextMessage()
+			return []a2a.Event{readyForNextTurnStatus(reqCtx, runtime)}, turnOutcomePause, nil
 		case "interrupted":
 			if runtime.cancelRequested.Load() {
-				return nil, true, nil
+				return nil, turnOutcomeFinish, nil
 			}
 			msg := a2a.NewMessageForTask(a2a.MessageRoleAgent, reqCtx, a2a.TextPart{Text: "Codex interrupted the turn."})
-			return []a2a.Event{statusWithMeta(reqCtx, a2a.TaskStateCanceled, msg, codexTaskMeta(runtime))}, true, nil
+			return []a2a.Event{statusWithMeta(reqCtx, a2a.TaskStateCanceled, msg, codexTaskMeta(runtime))}, turnOutcomeFinish, nil
 		case "failed":
 			message := "Codex turn failed."
 			if n.Turn.Error != nil && n.Turn.Error.Message != "" {
 				message = n.Turn.Error.Message
 			}
 			msg := a2a.NewMessageForTask(a2a.MessageRoleAgent, reqCtx, a2a.TextPart{Text: message})
-			return []a2a.Event{statusWithMeta(reqCtx, a2a.TaskStateFailed, msg, codexTaskMeta(runtime))}, true, nil
+			return []a2a.Event{statusWithMeta(reqCtx, a2a.TaskStateFailed, msg, codexTaskMeta(runtime))}, turnOutcomeFinish, nil
 		default:
 			msg := a2a.NewMessageForTask(a2a.MessageRoleAgent, reqCtx, a2a.TextPart{Text: "Codex returned an unknown terminal status."})
-			return []a2a.Event{statusWithMeta(reqCtx, a2a.TaskStateFailed, msg, codexTaskMeta(runtime))}, true, nil
+			return []a2a.Event{statusWithMeta(reqCtx, a2a.TaskStateFailed, msg, codexTaskMeta(runtime))}, turnOutcomeFinish, nil
 		}
 	case "turn/diff/updated":
 		n, err := decodeJSON[turnDiffUpdatedNotification](msg.Params)
 		if err != nil {
-			return nil, false, err
+			return nil, turnOutcomeContinue, err
 		}
 		event := replaceArtifact(reqCtx, "turn:diff", "Unified Diff", artifactMeta(runtime, "", "diff"), a2a.TextPart{Text: n.Diff})
-		return []a2a.Event{event}, false, nil
+		return []a2a.Event{event}, turnOutcomeContinue, nil
 	case "turn/plan/updated":
 		n, err := decodeJSON[turnPlanUpdatedNotification](msg.Params)
 		if err != nil {
-			return nil, false, err
+			return nil, turnOutcomeContinue, err
 		}
 		data := map[string]any{"plan": n.Plan}
 		if n.Explanation != nil {
 			data["explanation"] = *n.Explanation
 		}
 		event := replaceArtifact(reqCtx, "turn:plan", "Plan", artifactMeta(runtime, "", "plan"), a2a.DataPart{Data: data})
-		return []a2a.Event{event}, false, nil
+		return []a2a.Event{event}, turnOutcomeContinue, nil
 	case "item/agentMessage/delta":
 		n, err := decodeJSON[deltaNotification](msg.Params)
 		if err != nil {
-			return nil, false, err
+			return nil, turnOutcomeContinue, err
 		}
 		text := runtime.appendAssistantText(n.ItemID, n.Delta)
 		event := replaceArtifact(reqCtx, artifactID("assistant", n.ItemID), "Assistant Response", artifactMeta(runtime, n.ItemID, "agentMessage"), a2a.TextPart{Text: text})
-		return []a2a.Event{event}, false, nil
+		return []a2a.Event{event}, turnOutcomeContinue, nil
 	case "item/commandExecution/outputDelta":
 		n, err := decodeJSON[deltaNotification](msg.Params)
 		if err != nil {
-			return nil, false, err
+			return nil, turnOutcomeContinue, err
 		}
 		runtime.appendCommandOutput(n.ItemID, n.Delta)
 		event := appendArtifact(reqCtx, artifactID("command", n.ItemID), "Command Output", artifactMeta(runtime, n.ItemID, "commandExecution"), a2a.TextPart{Text: n.Delta})
-		return []a2a.Event{event}, false, nil
+		return []a2a.Event{event}, turnOutcomeContinue, nil
 	case "item/fileChange/outputDelta":
 		n, err := decodeJSON[deltaNotification](msg.Params)
 		if err != nil {
-			return nil, false, err
+			return nil, turnOutcomeContinue, err
 		}
 		runtime.appendFileChangeDiff(n.ItemID, n.Delta)
 		event := appendArtifact(reqCtx, artifactID("file-change", n.ItemID), "File Change", artifactMeta(runtime, n.ItemID, "fileChange"), a2a.TextPart{Text: n.Delta})
-		return []a2a.Event{event}, false, nil
+		return []a2a.Event{event}, turnOutcomeContinue, nil
 	case "item/started":
 		n, err := decodeJSON[itemNotification](msg.Params)
 		if err != nil {
-			return nil, false, err
+			return nil, turnOutcomeContinue, err
 		}
 		runtime.noteItemStarted(n.Item.ID, time.Now().UTC())
-		return startArtifactEvents(reqCtx, runtime, n.Item), false, nil
+		return startArtifactEvents(reqCtx, runtime, n.Item), turnOutcomeContinue, nil
 	case "item/completed":
 		n, err := decodeJSON[itemNotification](msg.Params)
 		if err != nil {
-			return nil, false, err
+			return nil, turnOutcomeContinue, err
 		}
-		return completedArtifactEvents(reqCtx, runtime, n.Item), false, nil
+		return completedArtifactEvents(reqCtx, runtime, n.Item), turnOutcomeContinue, nil
 	case "serverRequest/resolved":
-		return nil, false, nil
+		return nil, turnOutcomeContinue, nil
 	default:
-		return nil, false, nil
+		return nil, turnOutcomeContinue, nil
 	}
 }
 
@@ -586,6 +607,11 @@ func inputRequiredStatus(info a2a.TaskInfoProvider, pending *pendingRequest, not
 	}
 	msg := a2a.NewMessageForTask(a2a.MessageRoleAgent, info, a2a.TextPart{Text: text})
 	return statusWithMeta(info, a2a.TaskStateInputRequired, msg, map[string]any{"pendingKind": string(pending.Kind)})
+}
+
+func readyForNextTurnStatus(info a2a.TaskInfoProvider, runtime *taskRuntime) *a2a.TaskStatusUpdateEvent {
+	msg := a2a.NewMessageForTask(a2a.MessageRoleAgent, info, a2a.TextPart{Text: "Waiting for the next user message."})
+	return statusWithMeta(info, a2a.TaskStateInputRequired, msg, codexTaskMeta(runtime))
 }
 
 func startArtifactEvents(info a2a.TaskInfoProvider, runtime *taskRuntime, item threadItem) []a2a.Event {

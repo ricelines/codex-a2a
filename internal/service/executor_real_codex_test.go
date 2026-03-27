@@ -42,11 +42,11 @@ func TestRealCodexUsesAuthConfigAndAgentsInstructions(t *testing.T) {
 	defer cancel()
 
 	task := mustSendTask(ctx, t, h.handler, a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "hello from real codex"}))
-	if task.Status.State != a2a.TaskStateCompleted {
+	if task.Status.State != a2a.TaskStateInputRequired {
 		t.Fatalf(
 			"task.Status.State = %s, want %s; status message=%q; captured requests=%d",
 			task.Status.State,
-			a2a.TaskStateCompleted,
+			a2a.TaskStateInputRequired,
 			statusMessageText(task),
 			len(recorder.requests()),
 		)
@@ -81,14 +81,14 @@ func TestRealCodexCreatesDistinctThreadsForFollowUpTasks(t *testing.T) {
 	defer cancel()
 
 	first := mustSendTask(ctx, t, h.handler, a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "first task"}))
-	if first.Status.State != a2a.TaskStateCompleted {
+	if first.Status.State != a2a.TaskStateInputRequired {
 		t.Fatalf("first task status = %s; message=%q", first.Status.State, statusMessageText(first))
 	}
 
 	secondMsg := a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "second task"})
 	secondMsg.ContextID = first.ContextID
 	second := mustSendTask(ctx, t, h.handler, secondMsg)
-	if second.Status.State != a2a.TaskStateCompleted {
+	if second.Status.State != a2a.TaskStateInputRequired {
 		t.Fatalf("second task status = %s; message=%q", second.Status.State, statusMessageText(second))
 	}
 
@@ -177,8 +177,8 @@ func TestRealCodexUsesTrustedResponsesProxyWithChatGPTAuth(t *testing.T) {
 	defer cancel()
 
 	task := mustSendTask(ctx, t, h.handler, a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "hello through trusted proxy"}))
-	if task.Status.State != a2a.TaskStateCompleted {
-		t.Fatalf("task.Status.State = %s, want %s; status message=%q", task.Status.State, a2a.TaskStateCompleted, statusMessageText(task))
+	if task.Status.State != a2a.TaskStateInputRequired {
+		t.Fatalf("task.Status.State = %s, want %s; status message=%q", task.Status.State, a2a.TaskStateInputRequired, statusMessageText(task))
 	}
 	assertTaskArtifactContains(t, task, "proxied real codex")
 
@@ -248,8 +248,8 @@ func TestRealCodexUsesTrustedResponsesProxyWithAPIKeyAuth(t *testing.T) {
 	defer cancel()
 
 	task := mustSendTask(ctx, t, h.handler, a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "hello through trusted proxy"}))
-	if task.Status.State != a2a.TaskStateCompleted {
-		t.Fatalf("task.Status.State = %s, want %s; status message=%q", task.Status.State, a2a.TaskStateCompleted, statusMessageText(task))
+	if task.Status.State != a2a.TaskStateInputRequired {
+		t.Fatalf("task.Status.State = %s, want %s; status message=%q", task.Status.State, a2a.TaskStateInputRequired, statusMessageText(task))
 	}
 	assertTaskArtifactContains(t, task, "proxied api key")
 

@@ -40,6 +40,7 @@ type taskRuntime struct {
 
 	mu              sync.Mutex
 	pending         *pendingRequest
+	turnActive      bool
 	assistantTexts  map[string]string
 	commandOutputs  map[string]string
 	fileChangeDiffs map[string]string
@@ -63,6 +64,26 @@ func (t *taskRuntime) setPending(p *pendingRequest) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.pending = p
+}
+
+func (t *taskRuntime) startTurn(turnID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.TurnID = turnID
+	t.turnActive = true
+}
+
+func (t *taskRuntime) finishTurnForNextMessage() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.pending = nil
+	t.turnActive = false
+}
+
+func (t *taskRuntime) blocksBranching() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.turnActive || t.pending != nil
 }
 
 func (t *taskRuntime) pendingRequest() *pendingRequest {
@@ -260,7 +281,7 @@ func (b *broker) resolveBaseSession(contextID string, references []a2a.TaskID) (
 		if session == nil {
 			return nil, fmt.Errorf("reference task %s is not part of context %s", taskID, contextID)
 		}
-		if _, active := b.tasks[taskID]; active {
+		if runtime := b.tasks[taskID]; runtime != nil && runtime.blocksBranching() {
 			return nil, fmt.Errorf("reference task %s is still active; wait for it to finish before branching", taskID)
 		}
 		return session, nil
@@ -271,7 +292,7 @@ func (b *broker) resolveBaseSession(contextID string, references []a2a.TaskID) (
 		if session.childCount != 0 {
 			continue
 		}
-		if _, active := b.tasks[session.TaskID]; active {
+		if runtime := b.tasks[session.TaskID]; runtime != nil && runtime.blocksBranching() {
 			return nil, fmt.Errorf("context %s has an active task %s; wait for it to finish or specify referenceTaskIds", contextID, session.TaskID)
 		}
 		if leaf != nil {

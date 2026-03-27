@@ -5,8 +5,9 @@
 The wrapper maps:
 
 - A2A `contextId` -> one related family of Codex thread snapshots
-- A2A `taskId` -> one dedicated Codex thread snapshot plus one Codex turn
-- A2A task state `input-required` -> Codex approvals and MCP elicitations
+- A2A `taskId` -> one long-lived Codex thread for that conversation or workflow
+- repeated messages on the same non-terminal `taskId` -> additional Codex turns on the same thread
+- A2A task state `input-required` -> either Codex approvals / MCP elicitations or a paused conversation waiting for the next user message
 
 This repository intentionally uses `codex app-server`, not `codex mcp-server`. The app-server has the stable thread/turn/item surface needed to support streaming tasks, approvals, cancellation, and multi-turn context without inventing wrapper-only control flow.
 
@@ -149,11 +150,12 @@ want to assemble your own scenario, bind either `amber/codex-auth-proxy.json5` o
 
 - Starting a message with no `taskId` creates a new A2A task. If `contextId` is also empty, the wrapper creates a new Codex thread.
 - Starting a message with a new `taskId` and an existing `contextId` creates a new Codex thread by forking from the referenced prior task, or from the sole unambiguous branch in that context.
-- Continuing the same `taskId` is only supported when the task is already in `input-required`.
-- Parallel tasks in the same `contextId` are supported. Each task gets its own Codex thread snapshot so prior tasks remain immutable.
+- Continuing the same `taskId` while it is in `input-required` appends a new Codex turn onto that task's existing thread instead of forking.
+- Successful Codex turns leave the A2A task in `input-required` so clients can keep appending follow-up messages to the same task.
+- Parallel tasks in the same `contextId` are still supported. Each new task gets its own Codex thread snapshot so explicit branches remain immutable.
 - If a context has multiple branches, clients should send `referenceTaskIds`. The wrapper fails ambiguous follow-ups rather than silently guessing the wrong branch.
 
-The last point is deliberate: `a2a-go` allows only one active execution per task, so this wrapper does not treat same-task follow-up messages as Codex `turn/steer` while a task is still `working`.
+The last point is deliberate: `a2a-go` allows only one active execution per task, so this wrapper waits for a task to pause back to `input-required` before accepting another same-task message. Follow-up chat turns use Codex `turn/start` on the existing thread; `turn/steer` is reserved for already-active turns.
 
 ## Approvals and MCP elicitation
 

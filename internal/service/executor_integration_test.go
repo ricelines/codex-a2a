@@ -31,7 +31,7 @@ func TestExecutorStreamingCompletes(t *testing.T) {
 	assertHasTaskState(t, events, a2a.TaskStateSubmitted)
 	assertHasTaskState(t, events, a2a.TaskStateWorking)
 	assertHasArtifactText(t, events, "done: hello")
-	assertHasTaskState(t, events, a2a.TaskStateCompleted)
+	assertHasTaskState(t, events, a2a.TaskStateInputRequired)
 }
 
 func TestExecutorApprovalRoundTrip(t *testing.T) {
@@ -58,7 +58,7 @@ func TestExecutorApprovalRoundTrip(t *testing.T) {
 	}
 	assertHasTaskState(t, secondRun, a2a.TaskStateWorking)
 	assertHasArtifactText(t, secondRun, "approval accepted")
-	assertHasTaskState(t, secondRun, a2a.TaskStateCompleted)
+	assertHasTaskState(t, secondRun, a2a.TaskStateInputRequired)
 }
 
 func TestExecutorCancelTask(t *testing.T) {
@@ -162,15 +162,15 @@ func TestExecutorForwardsCodexConfigAndIndexedMCPServers(t *testing.T) {
 	defer cancel()
 
 	first := mustSendTask(ctx, t, h.handler, a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "first"}))
-	if first.Status.State != a2a.TaskStateCompleted {
-		t.Fatalf("first.Status.State = %s, want %s", first.Status.State, a2a.TaskStateCompleted)
+	if first.Status.State != a2a.TaskStateInputRequired {
+		t.Fatalf("first.Status.State = %s, want %s", first.Status.State, a2a.TaskStateInputRequired)
 	}
 
 	secondMsg := a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "second"})
 	secondMsg.ContextID = first.ContextID
 	second := mustSendTask(ctx, t, h.handler, secondMsg)
-	if second.Status.State != a2a.TaskStateCompleted {
-		t.Fatalf("second.Status.State = %s, want %s", second.Status.State, a2a.TaskStateCompleted)
+	if second.Status.State != a2a.TaskStateInputRequired {
+		t.Fatalf("second.Status.State = %s, want %s", second.Status.State, a2a.TaskStateInputRequired)
 	}
 
 	var startOp *fakeOperation

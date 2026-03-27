@@ -51,8 +51,8 @@ enable_request_compression = false
 	defer cancel()
 
 	task := mustSendTask(ctx, t, NewHandler(executor), a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "Reply with just OK."}))
-	if task.Status.State != a2a.TaskStateCompleted {
-		t.Fatalf("task.Status.State = %s, want %s", task.Status.State, a2a.TaskStateCompleted)
+	if task.Status.State != a2a.TaskStateInputRequired {
+		t.Fatalf("task.Status.State = %s, want %s", task.Status.State, a2a.TaskStateInputRequired)
 	}
 	assertTaskArtifactContains(t, task, "OK")
 }
