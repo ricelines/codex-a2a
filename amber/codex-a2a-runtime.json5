@@ -41,7 +41,8 @@
     },
     mounts: [
       { path: "/tmp/codex-home/.codex/config.toml", from: "config.config_toml" },
-      { path: "/tmp/codex-home/.codex/AGENTS.md", from: "config.agents_md" },
+      { when:  "config.agents_md",
+        path: "/tmp/codex-home/.codex/AGENTS.md", from: "config.agents_md" },
       { when: "config.workspace_agents_md",
         path: "/workspace/AGENTS.md", from: "config.workspace_agents_md" },
     ],
