@@ -142,6 +142,10 @@ The important boundary is that `codex-a2a-runtime` always consumes a `responses_
 capability. Real auth and mock behavior are separate provider components rather than
 alternate routing paths hidden inside the runtime config.
 
+The real-runtime manifests invoke the image's `docker-entrypoint.sh` rather than
+calling `codex-a2a` directly. That entrypoint normalizes mounted Codex state into
+the writable runtime home expected by `codex app-server`.
+
 If you want a no-token smoke setup in Amber, use `amber/mock-codex-a2a.json5`. If you
 want to assemble your own scenario, bind either `amber/codex-auth-proxy.json5` or
 `amber/mock-responses-api.json5` into `amber/codex-a2a-runtime.json5`.

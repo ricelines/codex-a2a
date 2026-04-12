@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/gob"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"iter"
 	"strings"
 	"time"
 
-	"github.com/a2aproject/a2a-go/a2a"
-	"github.com/a2aproject/a2a-go/a2asrv"
-	"github.com/a2aproject/a2a-go/a2asrv/eventqueue"
+	"github.com/a2aproject/a2a-go/v2/a2a"
+	"github.com/a2aproject/a2a-go/v2/a2asrv"
 )
 
 func init() {
@@ -35,6 +36,7 @@ type Executor struct {
 }
 
 var _ a2asrv.AgentExecutor = (*Executor)(nil)
+var _ a2asrv.AgentExecutionCleaner = (*Executor)(nil)
 
 func NewExecutor(cfg Config) (*Executor, error) {
 	b, err := newBroker(cfg)
@@ -48,7 +50,16 @@ func (e *Executor) Close() error {
 	return e.broker.Close()
 }
 
-func (e *Executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, queue eventqueue.Queue) error {
+func (e *Executor) Execute(ctx context.Context, reqCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
+	return func(yield func(a2a.Event, error) bool) {
+		writer := &yieldEventWriter{yield: yield}
+		if err := e.executeStream(ctx, reqCtx, writer); err != nil && !errors.Is(err, errStopStreaming) {
+			yield(nil, err)
+		}
+	}
+}
+
+func (e *Executor) executeStream(ctx context.Context, reqCtx *a2asrv.ExecutorContext, queue eventWriter) error {
 	options, err := requestOptionsFromConfig(e.cfg)
 	if err != nil {
 		return err
@@ -65,7 +76,7 @@ func (e *Executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 	if err := e.execute(ctx, reqCtx, options, queue); err != nil {
 		e.broker.finishTask(reqCtx.TaskID)
 		if firstEventSent || reqCtx.StoredTask != nil {
-			msg := a2a.NewMessageForTask(a2a.MessageRoleAgent, reqCtx, a2a.TextPart{Text: err.Error()})
+			msg := a2a.NewMessageForTask(a2a.MessageRoleAgent, reqCtx, a2a.NewTextPart(err.Error()))
 			return queue.Write(ctx, statusWithMeta(reqCtx, a2a.TaskStateFailed, msg, nil))
 		}
 		return err
@@ -75,9 +86,9 @@ func (e *Executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 
 func (e *Executor) execute(
 	ctx context.Context,
-	reqCtx *a2asrv.RequestContext,
+	reqCtx *a2asrv.ExecutorContext,
 	options RequestOptions,
-	queue eventqueue.Queue,
+	queue eventWriter,
 ) error {
 	switch {
 	case reqCtx.StoredTask == nil:
@@ -110,11 +121,11 @@ func (e *Executor) execute(
 
 func (e *Executor) startNewTurn(
 	ctx context.Context,
-	reqCtx *a2asrv.RequestContext,
+	reqCtx *a2asrv.ExecutorContext,
 	runtime *taskRuntime,
 	options RequestOptions,
 	input []codexUserInput,
-	queue eventqueue.Queue,
+	queue eventWriter,
 ) error {
 	respRaw, err := runtime.Session.Client.request(ctx, "turn/start", turnStartParams{
 		ThreadID:       runtime.Session.ThreadID,
@@ -143,9 +154,9 @@ func (e *Executor) startNewTurn(
 
 func (e *Executor) resumeInputRequired(
 	ctx context.Context,
-	reqCtx *a2asrv.RequestContext,
+	reqCtx *a2asrv.ExecutorContext,
 	runtime *taskRuntime,
-	queue eventqueue.Queue,
+	queue eventWriter,
 ) error {
 	pending := runtime.pendingRequest()
 	if pending == nil {
@@ -174,9 +185,9 @@ func (e *Executor) resumeInputRequired(
 
 func (e *Executor) consumeTurn(
 	ctx context.Context,
-	reqCtx *a2asrv.RequestContext,
+	reqCtx *a2asrv.ExecutorContext,
 	runtime *taskRuntime,
-	queue eventqueue.Queue,
+	queue eventWriter,
 ) error {
 	for {
 		msg, err := runtime.Session.Client.next(ctx)
@@ -229,7 +240,7 @@ const (
 	turnOutcomeFinish
 )
 
-func (e *Executor) handleServerRequest(reqCtx *a2asrv.RequestContext, runtime *taskRuntime, msg incomingMessage) (*pendingRequest, []a2a.Event, bool, error) {
+func (e *Executor) handleServerRequest(reqCtx *a2asrv.ExecutorContext, runtime *taskRuntime, msg incomingMessage) (*pendingRequest, []a2a.Event, bool, error) {
 	switch msg.Method {
 	case "item/commandExecution/requestApproval":
 		req, err := decodeJSON[commandApprovalRequest](msg.Params)
@@ -260,7 +271,7 @@ func (e *Executor) handleServerRequest(reqCtx *a2asrv.RequestContext, runtime *t
 	}
 }
 
-func (e *Executor) handleNotification(reqCtx *a2asrv.RequestContext, runtime *taskRuntime, msg incomingMessage) ([]a2a.Event, turnOutcome, error) {
+func (e *Executor) handleNotification(reqCtx *a2asrv.ExecutorContext, runtime *taskRuntime, msg incomingMessage) ([]a2a.Event, turnOutcome, error) {
 	switch msg.Method {
 	case "turn/started":
 		return nil, turnOutcomeContinue, nil
@@ -277,17 +288,17 @@ func (e *Executor) handleNotification(reqCtx *a2asrv.RequestContext, runtime *ta
 			if runtime.cancelRequested.Load() {
 				return nil, turnOutcomeFinish, nil
 			}
-			msg := a2a.NewMessageForTask(a2a.MessageRoleAgent, reqCtx, a2a.TextPart{Text: "Codex interrupted the turn."})
+			msg := a2a.NewMessageForTask(a2a.MessageRoleAgent, reqCtx, a2a.NewTextPart("Codex interrupted the turn."))
 			return []a2a.Event{statusWithMeta(reqCtx, a2a.TaskStateCanceled, msg, codexTaskMeta(runtime))}, turnOutcomeFinish, nil
 		case "failed":
 			message := "Codex turn failed."
 			if n.Turn.Error != nil && n.Turn.Error.Message != "" {
 				message = n.Turn.Error.Message
 			}
-			msg := a2a.NewMessageForTask(a2a.MessageRoleAgent, reqCtx, a2a.TextPart{Text: message})
+			msg := a2a.NewMessageForTask(a2a.MessageRoleAgent, reqCtx, a2a.NewTextPart(message))
 			return []a2a.Event{statusWithMeta(reqCtx, a2a.TaskStateFailed, msg, codexTaskMeta(runtime))}, turnOutcomeFinish, nil
 		default:
-			msg := a2a.NewMessageForTask(a2a.MessageRoleAgent, reqCtx, a2a.TextPart{Text: "Codex returned an unknown terminal status."})
+			msg := a2a.NewMessageForTask(a2a.MessageRoleAgent, reqCtx, a2a.NewTextPart("Codex returned an unknown terminal status."))
 			return []a2a.Event{statusWithMeta(reqCtx, a2a.TaskStateFailed, msg, codexTaskMeta(runtime))}, turnOutcomeFinish, nil
 		}
 	case "turn/diff/updated":
@@ -295,7 +306,7 @@ func (e *Executor) handleNotification(reqCtx *a2asrv.RequestContext, runtime *ta
 		if err != nil {
 			return nil, turnOutcomeContinue, err
 		}
-		event := replaceArtifact(reqCtx, "turn:diff", "Unified Diff", artifactMeta(runtime, "", "diff"), a2a.TextPart{Text: n.Diff})
+		event := replaceArtifact(reqCtx, "turn:diff", "Unified Diff", artifactMeta(runtime, "", "diff"), a2a.NewTextPart(n.Diff))
 		return []a2a.Event{event}, turnOutcomeContinue, nil
 	case "turn/plan/updated":
 		n, err := decodeJSON[turnPlanUpdatedNotification](msg.Params)
@@ -306,7 +317,7 @@ func (e *Executor) handleNotification(reqCtx *a2asrv.RequestContext, runtime *ta
 		if n.Explanation != nil {
 			data["explanation"] = *n.Explanation
 		}
-		event := replaceArtifact(reqCtx, "turn:plan", "Plan", artifactMeta(runtime, "", "plan"), a2a.DataPart{Data: data})
+		event := replaceArtifact(reqCtx, "turn:plan", "Plan", artifactMeta(runtime, "", "plan"), a2a.NewDataPart(data))
 		return []a2a.Event{event}, turnOutcomeContinue, nil
 	case "item/agentMessage/delta":
 		n, err := decodeJSON[deltaNotification](msg.Params)
@@ -314,7 +325,7 @@ func (e *Executor) handleNotification(reqCtx *a2asrv.RequestContext, runtime *ta
 			return nil, turnOutcomeContinue, err
 		}
 		text := runtime.appendAssistantText(n.ItemID, n.Delta)
-		event := replaceArtifact(reqCtx, artifactID("assistant", n.ItemID), "Assistant Response", artifactMeta(runtime, n.ItemID, "agentMessage"), a2a.TextPart{Text: text})
+		event := replaceArtifact(reqCtx, artifactID("assistant", n.ItemID), "Assistant Response", artifactMeta(runtime, n.ItemID, "agentMessage"), a2a.NewTextPart(text))
 		return []a2a.Event{event}, turnOutcomeContinue, nil
 	case "item/commandExecution/outputDelta":
 		n, err := decodeJSON[deltaNotification](msg.Params)
@@ -322,7 +333,7 @@ func (e *Executor) handleNotification(reqCtx *a2asrv.RequestContext, runtime *ta
 			return nil, turnOutcomeContinue, err
 		}
 		runtime.appendCommandOutput(n.ItemID, n.Delta)
-		event := appendArtifact(reqCtx, artifactID("command", n.ItemID), "Command Output", artifactMeta(runtime, n.ItemID, "commandExecution"), a2a.TextPart{Text: n.Delta})
+		event := appendArtifact(reqCtx, artifactID("command", n.ItemID), "Command Output", artifactMeta(runtime, n.ItemID, "commandExecution"), a2a.NewTextPart(n.Delta))
 		return []a2a.Event{event}, turnOutcomeContinue, nil
 	case "item/fileChange/outputDelta":
 		n, err := decodeJSON[deltaNotification](msg.Params)
@@ -330,7 +341,7 @@ func (e *Executor) handleNotification(reqCtx *a2asrv.RequestContext, runtime *ta
 			return nil, turnOutcomeContinue, err
 		}
 		runtime.appendFileChangeDiff(n.ItemID, n.Delta)
-		event := appendArtifact(reqCtx, artifactID("file-change", n.ItemID), "File Change", artifactMeta(runtime, n.ItemID, "fileChange"), a2a.TextPart{Text: n.Delta})
+		event := appendArtifact(reqCtx, artifactID("file-change", n.ItemID), "File Change", artifactMeta(runtime, n.ItemID, "fileChange"), a2a.NewTextPart(n.Delta))
 		return []a2a.Event{event}, turnOutcomeContinue, nil
 	case "item/started":
 		n, err := decodeJSON[itemNotification](msg.Params)
@@ -356,41 +367,37 @@ func codexInputsFromMessage(msg *a2a.Message) ([]codexUserInput, error) {
 	inputs := make([]codexUserInput, 0, len(msg.Parts))
 	var textParts []string
 	for _, part := range msg.Parts {
-		switch typed := part.(type) {
-		case a2a.TextPart:
-			if typed.Text != "" {
-				textParts = append(textParts, typed.Text)
+		if part == nil {
+			continue
+		}
+
+		switch content := part.Content.(type) {
+		case a2a.Text:
+			text := string(content)
+			if strings.TrimSpace(text) == "" {
+				continue
 			}
-		case *a2a.TextPart:
-			if typed.Text != "" {
-				textParts = append(textParts, typed.Text)
-			}
-		case a2a.DataPart:
-			blob, err := json.MarshalIndent(typed.Data, "", "  ")
+			textParts = append(textParts, text)
+		case a2a.Data:
+			value := content.Value
+			blob, err := json.MarshalIndent(part.Data(), "", "  ")
 			if err != nil {
 				return nil, fmt.Errorf("marshal data part: %w", err)
 			}
-			textParts = append(textParts, string(blob))
-		case *a2a.DataPart:
-			blob, err := json.MarshalIndent(typed.Data, "", "  ")
-			if err != nil {
-				return nil, fmt.Errorf("marshal data part: %w", err)
+			if value == nil {
+				blob = []byte("null")
 			}
 			textParts = append(textParts, string(blob))
-		case a2a.FilePart:
-			input, err := codexInputFromFilePart(typed)
+		case a2a.URL:
+			input, err := codexInputFromFilePart(part)
 			if err != nil {
 				return nil, err
 			}
 			inputs = append(inputs, input)
-		case *a2a.FilePart:
-			input, err := codexInputFromFilePart(*typed)
-			if err != nil {
-				return nil, err
-			}
-			inputs = append(inputs, input)
+		case a2a.Raw:
+			return nil, fmt.Errorf("unsupported raw message part content")
 		default:
-			return nil, fmt.Errorf("unsupported message part type %T", part)
+			return nil, fmt.Errorf("unsupported message part content")
 		}
 	}
 	if len(textParts) > 0 {
@@ -405,15 +412,14 @@ func codexInputsFromMessage(msg *a2a.Message) ([]codexUserInput, error) {
 	return inputs, nil
 }
 
-func codexInputFromFilePart(part a2a.FilePart) (codexUserInput, error) {
-	uri, ok := part.File.(a2a.FileURI)
-	if !ok {
-		return codexUserInput{}, fmt.Errorf("embedded file parts are not supported by this wrapper; provide a URI-backed file part instead")
+func codexInputFromFilePart(part *a2a.Part) (codexUserInput, error) {
+	if part == nil || part.URL() == "" {
+		return codexUserInput{}, fmt.Errorf("file parts must provide a URL-backed content part")
 	}
-	if uri.MimeType != "" && !strings.HasPrefix(uri.MimeType, "image/") {
-		return codexUserInput{}, fmt.Errorf("file parts are only supported for image MIME types, got %q", uri.MimeType)
+	if part.MediaType != "" && !strings.HasPrefix(part.MediaType, "image/") {
+		return codexUserInput{}, fmt.Errorf("file parts are only supported for image MIME types, got %q", part.MediaType)
 	}
-	return codexUserInput{Type: "image", URL: uri.URI}, nil
+	return codexUserInput{Type: "image", URL: string(part.URL())}, nil
 }
 
 func responseForPending(msg *a2a.Message, pending *pendingRequest) (any, error) {
@@ -468,11 +474,11 @@ func responseForPending(msg *a2a.Message, pending *pendingRequest) (any, error) 
 
 func firstDataPart(msg *a2a.Message) (map[string]any, bool) {
 	for _, part := range msg.Parts {
-		switch typed := part.(type) {
-		case a2a.DataPart:
-			return typed.Data, true
-		case *a2a.DataPart:
-			return typed.Data, true
+		if part == nil || part.Data() == nil {
+			continue
+		}
+		if data, ok := part.Data().(map[string]any); ok {
+			return data, true
 		}
 	}
 	return nil, false
@@ -488,15 +494,11 @@ func messageText(msg *a2a.Message) string {
 	return strings.Join(parts, "\n\n")
 }
 
-func partText(part a2a.Part) string {
-	switch typed := part.(type) {
-	case a2a.TextPart:
-		return typed.Text
-	case *a2a.TextPart:
-		return typed.Text
-	default:
+func partText(part *a2a.Part) string {
+	if part == nil {
 		return ""
 	}
+	return part.Text()
 }
 
 func sandboxPolicyFromString(mode string) map[string]any {
@@ -517,14 +519,13 @@ func sandboxPolicyFromString(mode string) map[string]any {
 
 func statusWithMeta(info a2a.TaskInfoProvider, state a2a.TaskState, msg *a2a.Message, meta map[string]any) *a2a.TaskStatusUpdateEvent {
 	event := a2a.NewStatusUpdateEvent(info, state, msg)
-	event.Final = state.Terminal() || state == a2a.TaskStateAuthRequired || state == a2a.TaskStateInputRequired
 	if meta != nil {
 		event.SetMeta(metadataNamespace, meta)
 	}
 	return event
 }
 
-func appendArtifact(info a2a.TaskInfoProvider, id, name string, meta map[string]any, parts ...a2a.Part) *a2a.TaskArtifactUpdateEvent {
+func appendArtifact(info a2a.TaskInfoProvider, id, name string, meta map[string]any, parts ...*a2a.Part) *a2a.TaskArtifactUpdateEvent {
 	event := a2a.NewArtifactUpdateEvent(info, a2a.ArtifactID(id), parts...)
 	event.Artifact.Name = name
 	if meta != nil {
@@ -533,7 +534,7 @@ func appendArtifact(info a2a.TaskInfoProvider, id, name string, meta map[string]
 	return event
 }
 
-func replaceArtifact(info a2a.TaskInfoProvider, id, name string, meta map[string]any, parts ...a2a.Part) *a2a.TaskArtifactUpdateEvent {
+func replaceArtifact(info a2a.TaskInfoProvider, id, name string, meta map[string]any, parts ...*a2a.Part) *a2a.TaskArtifactUpdateEvent {
 	taskInfo := info.TaskInfo()
 	return &a2a.TaskArtifactUpdateEvent{
 		TaskID:    taskInfo.TaskID,
@@ -541,7 +542,7 @@ func replaceArtifact(info a2a.TaskInfoProvider, id, name string, meta map[string
 		Artifact: &a2a.Artifact{
 			ID:       a2a.ArtifactID(id),
 			Name:     name,
-			Parts:    a2a.ContentParts(parts),
+			Parts:    parts,
 			Metadata: meta,
 		},
 	}
@@ -589,7 +590,7 @@ func pendingArtifact(info a2a.TaskInfoProvider, pending *pendingRequest, note st
 	if note != "" {
 		data["note"] = note
 	}
-	return replaceArtifact(info, "pending:user-input", "Pending User Input", map[string]any{"kind": string(pending.Kind)}, a2a.DataPart{Data: data})
+	return replaceArtifact(info, "pending:user-input", "Pending User Input", map[string]any{"kind": string(pending.Kind)}, a2a.NewDataPart(data))
 }
 
 func inputRequiredStatus(info a2a.TaskInfoProvider, pending *pendingRequest, note string) *a2a.TaskStatusUpdateEvent {
@@ -605,12 +606,12 @@ func inputRequiredStatus(info a2a.TaskInfoProvider, pending *pendingRequest, not
 	if note != "" {
 		text += " " + note
 	}
-	msg := a2a.NewMessageForTask(a2a.MessageRoleAgent, info, a2a.TextPart{Text: text})
+	msg := a2a.NewMessageForTask(a2a.MessageRoleAgent, info, a2a.NewTextPart(text))
 	return statusWithMeta(info, a2a.TaskStateInputRequired, msg, map[string]any{"pendingKind": string(pending.Kind)})
 }
 
 func readyForNextTurnStatus(info a2a.TaskInfoProvider, runtime *taskRuntime) *a2a.TaskStatusUpdateEvent {
-	msg := a2a.NewMessageForTask(a2a.MessageRoleAgent, info, a2a.TextPart{Text: "Waiting for the next user message."})
+	msg := a2a.NewMessageForTask(a2a.MessageRoleAgent, info, a2a.NewTextPart("Waiting for the next user message."))
 	return statusWithMeta(info, a2a.TaskStateInputRequired, msg, codexTaskMeta(runtime))
 }
 
@@ -618,19 +619,19 @@ func startArtifactEvents(info a2a.TaskInfoProvider, runtime *taskRuntime, item t
 	switch item.Type {
 	case "commandExecution":
 		return []a2a.Event{
-			replaceArtifact(info, artifactID("command", item.ID), "Command Output", artifactMeta(runtime, item.ID, item.Type), a2a.DataPart{Data: map[string]any{
+			replaceArtifact(info, artifactID("command", item.ID), "Command Output", artifactMeta(runtime, item.ID, item.Type), a2a.NewDataPart(map[string]any{
 				"command": item.Command,
 				"cwd":     item.Cwd,
 				"status":  item.Status,
 				"actions": item.CommandActions,
-			}}),
+			})),
 		}
 	case "fileChange":
 		return []a2a.Event{
-			replaceArtifact(info, artifactID("file-change", item.ID), "File Change", artifactMeta(runtime, item.ID, item.Type), a2a.DataPart{Data: map[string]any{
+			replaceArtifact(info, artifactID("file-change", item.ID), "File Change", artifactMeta(runtime, item.ID, item.Type), a2a.NewDataPart(map[string]any{
 				"changes": item.Changes,
 				"status":  item.Status,
-			}}),
+			})),
 		}
 	default:
 		return nil
@@ -644,41 +645,41 @@ func completedArtifactEvents(info a2a.TaskInfoProvider, runtime *taskRuntime, it
 			return nil
 		}
 		return []a2a.Event{
-			replaceArtifact(info, artifactID("assistant", item.ID), "Assistant Response", artifactMeta(runtime, item.ID, item.Type), a2a.TextPart{Text: item.Text}),
+			replaceArtifact(info, artifactID("assistant", item.ID), "Assistant Response", artifactMeta(runtime, item.ID, item.Type), a2a.NewTextPart(item.Text)),
 		}
 	case "commandExecution":
-		parts := []a2a.Part{
-			a2a.DataPart{Data: map[string]any{
+		parts := []*a2a.Part{
+			a2a.NewDataPart(map[string]any{
 				"command":          item.Command,
 				"cwd":              item.Cwd,
 				"status":           item.Status,
 				"actions":          item.CommandActions,
 				"aggregatedOutput": firstNonEmpty(item.AggregatedOutput, runtime.commandOutput(item.ID)),
 				"exitCode":         item.ExitCode,
-			}},
+			}),
 		}
 		if out := firstNonEmpty(item.AggregatedOutput, runtime.commandOutput(item.ID)); out != "" {
-			parts = append(parts, a2a.TextPart{Text: out})
+			parts = append(parts, a2a.NewTextPart(out))
 		}
 		return []a2a.Event{
 			replaceArtifact(info, artifactID("command", item.ID), "Command Output", artifactMeta(runtime, item.ID, item.Type), parts...),
 		}
 	case "fileChange":
-		parts := []a2a.Part{
-			a2a.DataPart{Data: map[string]any{
+		parts := []*a2a.Part{
+			a2a.NewDataPart(map[string]any{
 				"changes": item.Changes,
 				"status":  item.Status,
-			}},
+			}),
 		}
 		if diff := runtime.fileChangeDiff(item.ID); diff != "" {
-			parts = append(parts, a2a.TextPart{Text: diff})
+			parts = append(parts, a2a.NewTextPart(diff))
 		}
 		return []a2a.Event{
 			replaceArtifact(info, artifactID("file-change", item.ID), "File Change", artifactMeta(runtime, item.ID, item.Type), parts...),
 		}
 	case "mcpToolCall", "reasoning", "webSearch":
 		return []a2a.Event{
-			replaceArtifact(info, artifactID(item.Type, item.ID), item.Type, artifactMeta(runtime, item.ID, item.Type), a2a.DataPart{Data: structMap(item)}),
+			replaceArtifact(info, artifactID(item.Type, item.ID), item.Type, artifactMeta(runtime, item.ID, item.Type), a2a.NewDataPart(structMap(item))),
 		}
 	default:
 		return nil
@@ -704,7 +705,7 @@ func structMap(v any) map[string]any {
 	return out
 }
 
-func writeEvents(ctx context.Context, queue eventqueue.Queue, events []a2a.Event) error {
+func writeEvents(ctx context.Context, queue eventWriter, events []a2a.Event) error {
 	for _, event := range events {
 		if err := queue.Write(ctx, event); err != nil {
 			return err
@@ -713,18 +714,48 @@ func writeEvents(ctx context.Context, queue eventqueue.Queue, events []a2a.Event
 	return nil
 }
 
-func (e *Executor) Cancel(ctx context.Context, reqCtx *a2asrv.RequestContext, queue eventqueue.Queue) error {
-	runtime, err := e.broker.cancel(reqCtx.TaskID)
-	if err != nil {
-		return err
+func (e *Executor) Cancel(ctx context.Context, reqCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
+	return func(yield func(a2a.Event, error) bool) {
+		runtime, err := e.broker.cancel(reqCtx.TaskID)
+		if err != nil {
+			yield(nil, err)
+			return
+		}
+		if runtime.TurnID != "" {
+			_, _ = runtime.Session.Client.request(ctx, "turn/interrupt", map[string]any{
+				"threadId": runtime.Session.ThreadID,
+				"turnId":   runtime.TurnID,
+			})
+		}
+		msg := a2a.NewMessageForTask(a2a.MessageRoleAgent, reqCtx, a2a.NewTextPart("Canceled by the user."))
+		yield(statusWithMeta(reqCtx, a2a.TaskStateCanceled, msg, codexTaskMeta(runtime)), nil)
 	}
-	if runtime.TurnID != "" {
-		_, _ = runtime.Session.Client.request(ctx, "turn/interrupt", map[string]any{
-			"threadId": runtime.Session.ThreadID,
-			"turnId":   runtime.TurnID,
-		})
+}
+
+func (e *Executor) Cleanup(_ context.Context, reqCtx *a2asrv.ExecutorContext, result a2a.SendMessageResult, err error) {
+	if reqCtx.Message != nil || err != nil {
+		return
+	}
+	task, ok := result.(*a2a.Task)
+	if !ok || task.Status.State != a2a.TaskStateCanceled {
+		return
 	}
 	e.broker.finishTask(reqCtx.TaskID)
-	msg := a2a.NewMessageForTask(a2a.MessageRoleAgent, reqCtx, a2a.TextPart{Text: "Canceled by the user."})
-	return queue.Write(ctx, statusWithMeta(reqCtx, a2a.TaskStateCanceled, msg, codexTaskMeta(runtime)))
+}
+
+var errStopStreaming = errors.New("stop streaming")
+
+type eventWriter interface {
+	Write(context.Context, a2a.Event) error
+}
+
+type yieldEventWriter struct {
+	yield func(a2a.Event, error) bool
+}
+
+func (w *yieldEventWriter) Write(_ context.Context, event a2a.Event) error {
+	if !w.yield(event, nil) {
+		return errStopStreaming
+	}
+	return nil
 }

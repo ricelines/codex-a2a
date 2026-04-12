@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/a2aproject/a2a-go/a2asrv"
+	"github.com/a2aproject/a2a-go/v2/a2asrv"
 	"github.com/nhynes/codex-a2a/internal/service"
 )
 

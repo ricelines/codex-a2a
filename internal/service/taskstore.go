@@ -10,14 +10,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/a2aproject/a2a-go/a2a"
-	"github.com/a2aproject/a2a-go/a2asrv"
+	"github.com/a2aproject/a2a-go/v2/a2a"
+	"github.com/a2aproject/a2a-go/v2/a2asrv"
+	"github.com/a2aproject/a2a-go/v2/a2asrv/taskstore"
 )
 
 type storedTask struct {
 	task        *a2a.Task
 	user        string
-	version     a2a.TaskVersion
+	version     taskstore.TaskVersion
 	lastUpdated time.Time
 }
 
@@ -29,14 +30,14 @@ type taskStore struct {
 // NewTaskStore returns an in-memory task store with per-user ownership checks.
 // Unauthenticated callers still share a local anonymous view because this repo
 // does not provide an auth layer of its own.
-func NewTaskStore() a2asrv.TaskStore {
+func NewTaskStore() taskstore.Store {
 	return &taskStore{tasks: make(map[a2a.TaskID]*storedTask)}
 }
 
-func (s *taskStore) Save(ctx context.Context, task *a2a.Task, _ a2a.Event, prev a2a.TaskVersion) (a2a.TaskVersion, error) {
+func (s *taskStore) Create(ctx context.Context, task *a2a.Task) (taskstore.TaskVersion, error) {
 	copyTask, err := cloneTask(task)
 	if err != nil {
-		return a2a.TaskVersionMissing, err
+		return taskstore.TaskVersionMissing, err
 	}
 
 	user := taskStoreUser(ctx)
@@ -44,18 +45,43 @@ func (s *taskStore) Save(ctx context.Context, task *a2a.Task, _ a2a.Event, prev 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	version := a2a.TaskVersion(1)
 	if stored := s.tasks[task.ID]; stored != nil {
 		if stored.user != user {
-			return a2a.TaskVersionMissing, a2a.ErrTaskNotFound
+			return taskstore.TaskVersionMissing, a2a.ErrTaskNotFound
 		}
-		if prev != a2a.TaskVersionMissing && stored.version != prev {
-			return a2a.TaskVersionMissing, a2a.ErrConcurrentTaskModification
-		}
-		version = stored.version + 1
+		return taskstore.TaskVersionMissing, taskstore.ErrTaskAlreadyExists
 	}
 
 	s.tasks[task.ID] = &storedTask{
+		task:        copyTask,
+		user:        user,
+		version:     1,
+		lastUpdated: time.Now(),
+	}
+	return 1, nil
+}
+
+func (s *taskStore) Update(ctx context.Context, update *taskstore.UpdateRequest) (taskstore.TaskVersion, error) {
+	copyTask, err := cloneTask(update.Task)
+	if err != nil {
+		return taskstore.TaskVersionMissing, err
+	}
+
+	user := taskStoreUser(ctx)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	stored := s.tasks[update.Task.ID]
+	if stored == nil || stored.user != user {
+		return taskstore.TaskVersionMissing, a2a.ErrTaskNotFound
+	}
+	if update.PrevVersion != taskstore.TaskVersionMissing && stored.version != update.PrevVersion {
+		return taskstore.TaskVersionMissing, taskstore.ErrConcurrentModification
+	}
+
+	version := stored.version + 1
+	s.tasks[update.Task.ID] = &storedTask{
 		task:        copyTask,
 		user:        user,
 		version:     version,
@@ -64,20 +90,20 @@ func (s *taskStore) Save(ctx context.Context, task *a2a.Task, _ a2a.Event, prev 
 	return version, nil
 }
 
-func (s *taskStore) Get(ctx context.Context, taskID a2a.TaskID) (*a2a.Task, a2a.TaskVersion, error) {
+func (s *taskStore) Get(ctx context.Context, taskID a2a.TaskID) (*taskstore.StoredTask, error) {
 	s.mu.RLock()
 	stored := s.tasks[taskID]
 	s.mu.RUnlock()
 
 	if stored == nil || stored.user != taskStoreUser(ctx) {
-		return nil, a2a.TaskVersionMissing, a2a.ErrTaskNotFound
+		return nil, a2a.ErrTaskNotFound
 	}
 
 	task, err := cloneTask(stored.task)
 	if err != nil {
-		return nil, a2a.TaskVersionMissing, err
+		return nil, err
 	}
-	return task, stored.version, nil
+	return &taskstore.StoredTask{Task: task, Version: stored.version}, nil
 }
 
 func (s *taskStore) List(ctx context.Context, req *a2a.ListTasksRequest) (*a2a.ListTasksResponse, error) {
@@ -88,8 +114,8 @@ func (s *taskStore) List(ctx context.Context, req *a2a.ListTasksRequest) (*a2a.L
 	case pageSize < 1 || pageSize > 100:
 		return nil, fmt.Errorf("page size must be between 1 and 100 inclusive, got %d", pageSize)
 	}
-	if req.HistoryLength < 0 {
-		return nil, fmt.Errorf("history length must be non-negative integer, got %d", req.HistoryLength)
+	if req.HistoryLength != nil && *req.HistoryLength < 0 {
+		return nil, fmt.Errorf("history length must be non-negative integer, got %d", *req.HistoryLength)
 	}
 
 	user := taskStoreUser(ctx)
@@ -106,7 +132,7 @@ func (s *taskStore) List(ctx context.Context, req *a2a.ListTasksRequest) (*a2a.L
 		if req.Status != a2a.TaskStateUnspecified && stored.task.Status.State != req.Status {
 			continue
 		}
-		if req.LastUpdatedAfter != nil && stored.lastUpdated.Before(*req.LastUpdatedAfter) {
+		if req.StatusTimestampAfter != nil && stored.lastUpdated.Before(*req.StatusTimestampAfter) {
 			continue
 		}
 		filtered = append(filtered, stored)
@@ -131,8 +157,8 @@ func (s *taskStore) List(ctx context.Context, req *a2a.ListTasksRequest) (*a2a.L
 		if err != nil {
 			return nil, err
 		}
-		if req.HistoryLength > 0 && len(task.History) > req.HistoryLength {
-			task.History = task.History[len(task.History)-req.HistoryLength:]
+		if req.HistoryLength != nil && *req.HistoryLength > 0 && len(task.History) > *req.HistoryLength {
+			task.History = task.History[len(task.History)-*req.HistoryLength:]
 		}
 		if !req.IncludeArtifacts {
 			task.Artifacts = nil
@@ -161,8 +187,8 @@ func cloneTask(task *a2a.Task) (*a2a.Task, error) {
 }
 
 func taskStoreUser(ctx context.Context) string {
-	if callCtx, ok := a2asrv.CallContextFrom(ctx); ok && callCtx.User != nil && callCtx.User.Name() != "" {
-		return callCtx.User.Name()
+	if callCtx, ok := a2asrv.CallContextFrom(ctx); ok && callCtx.User != nil && callCtx.User.Name != "" {
+		return callCtx.User.Name
 	}
 	return "anonymous"
 }

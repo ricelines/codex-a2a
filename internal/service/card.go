@@ -1,27 +1,21 @@
 package service
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
 
-	"github.com/a2aproject/a2a-go/a2a"
+	"github.com/a2aproject/a2a-go/v2/a2a"
+	"github.com/a2aproject/a2a-go/v2/a2asrv"
 )
 
 func AgentCard(cfg Config, baseURL string) *a2a.AgentCard {
 	invokeURL := strings.TrimRight(baseURL, "/") + "/invoke"
 	return &a2a.AgentCard{
-		Name:               cfg.AgentName,
-		Description:        cfg.AgentDescription,
-		Version:            "0.1.0",
-		URL:                invokeURL,
-		ProtocolVersion:    string(a2a.Version),
-		PreferredTransport: a2a.TransportProtocolJSONRPC,
-		AdditionalInterfaces: []a2a.AgentInterface{
-			{
-				URL:       invokeURL,
-				Transport: a2a.TransportProtocolJSONRPC,
-			},
+		Name:        cfg.AgentName,
+		Description: cfg.AgentDescription,
+		Version:     "0.1.0",
+		SupportedInterfaces: []*a2a.AgentInterface{
+			a2a.NewAgentInterface(invokeURL, a2a.TransportProtocolJSONRPC),
 		},
 		DefaultInputModes:  []string{"text/plain", "application/json"},
 		DefaultOutputModes: []string{"text/plain", "application/json"},
@@ -56,9 +50,6 @@ func AgentCardHandler(cfg Config) http.Handler {
 			}
 			baseURL = scheme + "://" + req.Host
 		}
-		card := AgentCard(cfg, baseURL)
-		rw.Header().Set("Content-Type", "application/json")
-		rw.Header().Set("Access-Control-Allow-Origin", "*")
-		_ = json.NewEncoder(rw).Encode(card)
+		a2asrv.NewStaticAgentCardHandler(AgentCard(cfg, baseURL)).ServeHTTP(rw, req)
 	})
 }

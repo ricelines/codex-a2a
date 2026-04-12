@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/a2aproject/a2a-go/a2a"
-	"github.com/a2aproject/a2a-go/a2asrv"
+	"github.com/a2aproject/a2a-go/v2/a2a"
+	"github.com/a2aproject/a2a-go/v2/a2asrv"
 )
 
 func TestExecutorStreamingCompletes(t *testing.T) {
@@ -22,10 +24,10 @@ func TestExecutorStreamingCompletes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(newAuthedContext(), 10*time.Second)
 	defer cancel()
 
-	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "hello"})
-	events, err := collectEvents(h.handler.OnSendMessageStream(ctx, &a2a.MessageSendParams{Message: msg}))
+	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hello"))
+	events, err := sendStreamingEvents(ctx, t, h.handler, &a2a.SendMessageRequest{Message: msg})
 	if err != nil {
-		t.Fatalf("OnSendMessageStream() error = %v", err)
+		t.Fatalf("SendStreamingMessage() error = %v", err)
 	}
 
 	assertHasTaskState(t, events, a2a.TaskStateSubmitted)
@@ -39,10 +41,10 @@ func TestExecutorApprovalRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(newAuthedContext(), 10*time.Second)
 	defer cancel()
 
-	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "NEEDS_APPROVAL"})
-	firstRun, err := collectEvents(h.handler.OnSendMessageStream(ctx, &a2a.MessageSendParams{Message: msg}))
+	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("NEEDS_APPROVAL"))
+	firstRun, err := sendStreamingEvents(ctx, t, h.handler, &a2a.SendMessageRequest{Message: msg})
 	if err != nil {
-		t.Fatalf("first OnSendMessageStream() error = %v", err)
+		t.Fatalf("first SendStreamingMessage() error = %v", err)
 	}
 	assertHasTaskState(t, firstRun, a2a.TaskStateInputRequired)
 
@@ -50,11 +52,11 @@ func TestExecutorApprovalRoundTrip(t *testing.T) {
 	reply := a2a.NewMessageForTask(
 		a2a.MessageRoleUser,
 		a2a.TaskInfo{TaskID: taskID, ContextID: contextID},
-		a2a.DataPart{Data: map[string]any{"decision": "accept"}},
+		a2a.NewDataPart(map[string]any{"decision": "accept"}),
 	)
-	secondRun, err := collectEvents(h.handler.OnSendMessageStream(ctx, &a2a.MessageSendParams{Message: reply}))
+	secondRun, err := sendStreamingEvents(ctx, t, h.handler, &a2a.SendMessageRequest{Message: reply})
 	if err != nil {
-		t.Fatalf("second OnSendMessageStream() error = %v", err)
+		t.Fatalf("second SendStreamingMessage() error = %v", err)
 	}
 	assertHasTaskState(t, secondRun, a2a.TaskStateWorking)
 	assertHasArtifactText(t, secondRun, "approval accepted")
@@ -66,20 +68,20 @@ func TestExecutorCancelTask(t *testing.T) {
 	ctx, cancel := context.WithTimeout(newAuthedContext(), 10*time.Second)
 	defer cancel()
 
-	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "NEEDS_APPROVAL"})
-	firstRun, err := collectEvents(h.handler.OnSendMessageStream(ctx, &a2a.MessageSendParams{Message: msg}))
+	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("NEEDS_APPROVAL"))
+	firstRun, err := sendStreamingEvents(ctx, t, h.handler, &a2a.SendMessageRequest{Message: msg})
 	if err != nil {
-		t.Fatalf("OnSendMessageStream() error = %v", err)
+		t.Fatalf("SendStreamingMessage() error = %v", err)
 	}
 	assertHasTaskState(t, firstRun, a2a.TaskStateInputRequired)
 
 	taskID, _ := taskIdentity(t, firstRun)
-	result, err := h.handler.OnCancelTask(ctx, &a2a.TaskIDParams{ID: taskID})
+	result, err := cancelTaskWithRetry(ctx, t, h.handler, &a2a.CancelTaskRequest{ID: taskID})
 	if err != nil {
-		t.Fatalf("OnCancelTask() error = %v", err)
+		t.Fatalf("CancelTask() error = %v", err)
 	}
 	if result.Status.State != a2a.TaskStateCanceled {
-		t.Fatalf("OnCancelTask() state = %s, want %s", result.Status.State, a2a.TaskStateCanceled)
+		t.Fatalf("CancelTask() state = %s, want %s", result.Status.State, a2a.TaskStateCanceled)
 	}
 }
 
@@ -88,21 +90,21 @@ func TestExecutorListTasksByContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(newAuthedContext(), 10*time.Second)
 	defer cancel()
 
-	firstTask := mustSendTask(ctx, t, h.handler, a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "first task"}))
+	firstTask := mustSendTask(ctx, t, h.handler, a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("first task")))
 
-	second := a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "second task"})
+	second := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("second task"))
 	second.ContextID = firstTask.ContextID
 	secondTask := mustSendTask(ctx, t, h.handler, second)
 
-	list, err := h.handler.OnListTasks(ctx, &a2a.ListTasksRequest{ContextID: firstTask.ContextID, IncludeArtifacts: true})
+	list, err := h.handler.ListTasks(ctx, &a2a.ListTasksRequest{ContextID: firstTask.ContextID, IncludeArtifacts: true})
 	if err != nil {
-		t.Fatalf("OnListTasks() error = %v", err)
+		t.Fatalf("ListTasks() error = %v", err)
 	}
 	if len(list.Tasks) != 2 {
-		t.Fatalf("OnListTasks() returned %d tasks, want 2", len(list.Tasks))
+		t.Fatalf("ListTasks() returned %d tasks, want 2", len(list.Tasks))
 	}
 	if list.Tasks[0].ContextID != firstTask.ContextID || list.Tasks[1].ContextID != secondTask.ContextID {
-		t.Fatalf("OnListTasks() returned tasks from unexpected contexts: %#v", list.Tasks)
+		t.Fatalf("ListTasks() returned tasks from unexpected contexts: %#v", list.Tasks)
 	}
 }
 
@@ -111,7 +113,7 @@ func TestExecutorInvalidInitialMessageDoesNotCreateForkParent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(newAuthedContext(), 10*time.Second)
 	defer cancel()
 
-	invalid := mustSendTask(ctx, t, h.handler, a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: ""}))
+	invalid := mustSendTask(ctx, t, h.handler, a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("")))
 	if invalid.Status.State != a2a.TaskStateFailed {
 		t.Fatalf("invalid.Status.State = %s, want %s", invalid.Status.State, a2a.TaskStateFailed)
 	}
@@ -124,7 +126,7 @@ func TestExecutorInvalidInitialMessageDoesNotCreateForkParent(t *testing.T) {
 		t.Fatalf("invalid first message unexpectedly touched codex state: %#v", before)
 	}
 
-	retry := a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "hello"})
+	retry := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hello"))
 	retry.ContextID = invalid.ContextID
 	task := mustSendTask(ctx, t, h.handler, retry)
 
@@ -161,12 +163,12 @@ func TestExecutorForwardsCodexConfigAndIndexedMCPServers(t *testing.T) {
 	ctx, cancel := context.WithTimeout(newAuthedContext(), 10*time.Second)
 	defer cancel()
 
-	first := mustSendTask(ctx, t, h.handler, a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "first"}))
+	first := mustSendTask(ctx, t, h.handler, a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("first")))
 	if first.Status.State != a2a.TaskStateInputRequired {
 		t.Fatalf("first.Status.State = %s, want %s", first.Status.State, a2a.TaskStateInputRequired)
 	}
 
-	secondMsg := a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "second"})
+	secondMsg := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("second"))
 	secondMsg.ContextID = first.ContextID
 	second := mustSendTask(ctx, t, h.handler, secondMsg)
 	if second.Status.State != a2a.TaskStateInputRequired {
@@ -277,36 +279,90 @@ func newTestHandler(t *testing.T) a2asrv.RequestHandler {
 }
 
 func newAuthedContext() context.Context {
-	ctx, callCtx := a2asrv.WithCallContext(context.Background(), nil)
-	callCtx.User = &a2asrv.AuthenticatedUser{UserName: "tester"}
+	ctx, callCtx := a2asrv.NewCallContext(context.Background(), nil)
+	callCtx.User = a2asrv.NewAuthenticatedUser("tester", nil)
 	return ctx
 }
 
 func mustSendTask(ctx context.Context, t *testing.T, handler a2asrv.RequestHandler, msg *a2a.Message) *a2a.Task {
 	t.Helper()
-	result, err := handler.OnSendMessage(ctx, &a2a.MessageSendParams{Message: msg})
+	result, err := sendMessageWithRetry(ctx, t, handler, &a2a.SendMessageRequest{Message: msg})
 	if err != nil {
-		t.Fatalf("OnSendMessage() error = %v", err)
+		t.Fatalf("SendMessage() error = %v", err)
 	}
 	task, ok := result.(*a2a.Task)
 	if !ok {
-		t.Fatalf("OnSendMessage() result = %T, want *a2a.Task", result)
+		t.Fatalf("SendMessage() result = %T, want *a2a.Task", result)
 	}
 	return task
 }
 
-func collectEvents(seq func(func(a2a.Event, error) bool)) ([]a2a.Event, error) {
+func sendMessageWithRetry(ctx context.Context, t *testing.T, handler a2asrv.RequestHandler, req *a2a.SendMessageRequest) (a2a.SendMessageResult, error) {
+	t.Helper()
+
+	var lastErr error
+	for range 8 {
+		result, err := handler.SendMessage(ctx, req)
+		if err == nil || !isTransientExecutionRace(err) {
+			return result, err
+		}
+		lastErr = err
+		time.Sleep(15 * time.Millisecond)
+	}
+	return nil, lastErr
+}
+
+func sendStreamingEvents(ctx context.Context, t *testing.T, handler a2asrv.RequestHandler, req *a2a.SendMessageRequest) ([]a2a.Event, error) {
+	t.Helper()
+
+	var lastErr error
+	for range 8 {
+		events, err := collectEvents(handler.SendStreamingMessage(ctx, req))
+		if err == nil || !isTransientExecutionRace(err) {
+			return events, err
+		}
+		lastErr = err
+		time.Sleep(15 * time.Millisecond)
+	}
+	return nil, lastErr
+}
+
+func cancelTaskWithRetry(ctx context.Context, t *testing.T, handler a2asrv.RequestHandler, req *a2a.CancelTaskRequest) (*a2a.Task, error) {
+	t.Helper()
+
+	var lastErr error
+	for range 8 {
+		task, err := handler.CancelTask(ctx, req)
+		if err == nil || !isTransientExecutionRace(err) {
+			return task, err
+		}
+		lastErr = err
+		time.Sleep(15 * time.Millisecond)
+	}
+	return nil, lastErr
+}
+
+func collectEvents(seq iter.Seq2[a2a.Event, error]) ([]a2a.Event, error) {
 	events := make([]a2a.Event, 0, 8)
 	var streamErr error
-	seq(func(event a2a.Event, err error) bool {
+	for event, err := range seq {
 		if err != nil {
 			streamErr = err
-			return false
+			break
 		}
 		events = append(events, event)
-		return true
-	})
+	}
 	return events, streamErr
+}
+
+func isTransientExecutionRace(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "task execution is already in progress") ||
+		strings.Contains(msg, "task cancelation is in progress") ||
+		strings.Contains(msg, "queue is closed")
 }
 
 func assertHasTaskState(t *testing.T, events []a2a.Event, want a2a.TaskState) {
@@ -455,6 +511,11 @@ func TestFakeCodexHelperProcess(t *testing.T) {
 }
 
 func runFakeCodex(stdin io.Reader, stdout io.Writer) error {
+	if msg := os.Getenv("FAKE_CODEX_FAIL_BEFORE_INITIALIZE"); msg != "" {
+		fmt.Fprintln(os.Stderr, msg)
+		return errors.New(msg)
+	}
+
 	server := &fakeCodexServer{
 		reader:             bufio.NewReader(stdin),
 		writer:             json.NewEncoder(stdout),

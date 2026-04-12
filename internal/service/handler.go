@@ -1,7 +1,7 @@
 package service
 
 import (
-	"github.com/a2aproject/a2a-go/a2asrv"
+	"github.com/a2aproject/a2a-go/v2/a2asrv"
 )
 
 func NewHandler(executor *Executor) a2asrv.RequestHandler {
@@ -9,6 +9,6 @@ func NewHandler(executor *Executor) a2asrv.RequestHandler {
 	return a2asrv.NewHandler(
 		executor,
 		a2asrv.WithTaskStore(taskStore),
-		a2asrv.WithRequestContextInterceptor(&a2asrv.ReferencedTasksLoader{Store: taskStore}),
+		a2asrv.WithExecutorContextInterceptor(&a2asrv.ReferencedTasksLoader{Store: taskStore}),
 	)
 }

@@ -11,7 +11,7 @@
   },
 
   program: {
-    image: "ghcr.io/ricelines/codex-a2a:v0.1",
+    image: "ghcr.io/ricelines/codex-a2a:v0.2",
     entrypoint: [
       "/usr/local/bin/codex-a2a",
       "--mode", "auth-proxy",

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/a2aproject/a2a-go/a2a"
+	"github.com/a2aproject/a2a-go/v2/a2a"
 )
 
 func TestLiveCodexSmoke(t *testing.T) {
@@ -50,7 +50,7 @@ enable_request_compression = false
 	ctx, cancel := context.WithTimeout(newAuthedContext(), 90*time.Second)
 	defer cancel()
 
-	task := mustSendTask(ctx, t, NewHandler(executor), a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "Reply with just OK."}))
+	task := mustSendTask(ctx, t, NewHandler(executor), a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("Reply with just OK.")))
 	if task.Status.State != a2a.TaskStateInputRequired {
 		t.Fatalf("task.Status.State = %s, want %s", task.Status.State, a2a.TaskStateInputRequired)
 	}

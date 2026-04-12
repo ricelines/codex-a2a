@@ -36,8 +36,14 @@ type codexClient struct {
 
 	events chan incomingMessage
 	done   chan error
+
+	stderrMu   sync.Mutex
+	stderrTail []string
+
 	closed atomic.Bool
 }
+
+const stderrTailLines = 20
 
 func launchCodexClient(ctx context.Context, cfg Config) (*codexClient, error) {
 	procCtx := context.WithoutCancel(ctx)
@@ -80,9 +86,7 @@ func launchCodexClient(ctx context.Context, cfg Config) (*codexClient, error) {
 		done:    make(chan error, 1),
 	}
 	go client.readLoop(stdout)
-	go func() {
-		_, _ = io.Copy(io.Discard, stderr)
-	}()
+	go client.stderrLoop(stderr)
 	go client.waitLoop()
 
 	if err := client.initialize(ctx, cfg); err != nil {
@@ -167,19 +171,31 @@ func (c *codexClient) readLoop(stdout io.Reader) {
 
 func (c *codexClient) waitLoop() {
 	err := c.cmd.Wait()
-	if err != nil && !c.closed.Load() {
-		c.finish(fmt.Errorf("codex app-server exited: %w", err))
+	if c.closed.Load() {
 		return
+	}
+
+	if err == nil {
+		err = fmt.Errorf("codex app-server exited before the protocol completed")
+	} else {
+		err = fmt.Errorf("codex app-server exited: %w", err)
+	}
+	if summary := c.stderrSummary(); summary != "" {
+		err = fmt.Errorf("%w\nstderr:\n%s", err, summary)
 	}
 	c.finish(err)
 }
 
 func (c *codexClient) finish(err error) {
 	if c.closed.CompareAndSwap(false, true) {
+		message := "codex app-server closed"
+		if err != nil {
+			message = err.Error()
+		}
 		c.mu.Lock()
 		for key, ch := range c.pending {
 			delete(c.pending, key)
-			ch <- responseMessage{Error: &rpcError{Message: "codex app-server closed"}}
+			ch <- responseMessage{Error: &rpcError{Message: message}}
 			close(ch)
 		}
 		c.mu.Unlock()
@@ -187,6 +203,39 @@ func (c *codexClient) finish(err error) {
 		c.done <- err
 		close(c.done)
 	}
+}
+
+func (c *codexClient) stderrLoop(stderr io.Reader) {
+	scanner := bufio.NewScanner(stderr)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+	for scanner.Scan() {
+		c.appendStderr(scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		c.appendStderr("stderr read error: " + err.Error())
+	}
+}
+
+func (c *codexClient) appendStderr(line string) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return
+	}
+
+	c.stderrMu.Lock()
+	defer c.stderrMu.Unlock()
+
+	c.stderrTail = append(c.stderrTail, line)
+	if len(c.stderrTail) > stderrTailLines {
+		c.stderrTail = append([]string(nil), c.stderrTail[len(c.stderrTail)-stderrTailLines:]...)
+	}
+}
+
+func (c *codexClient) stderrSummary() string {
+	c.stderrMu.Lock()
+	defer c.stderrMu.Unlock()
+	return strings.Join(c.stderrTail, "\n")
 }
 
 func (c *codexClient) Alive() bool {
