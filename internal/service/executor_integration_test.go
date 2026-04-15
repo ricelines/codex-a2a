@@ -515,6 +515,16 @@ func runFakeCodex(stdin io.Reader, stdout io.Writer) error {
 		fmt.Fprintln(os.Stderr, msg)
 		return errors.New(msg)
 	}
+	if os.Getenv("FAKE_CODEX_REQUIRE_CODEX_HOME") == "1" {
+		codexHome := os.Getenv("CODEX_HOME")
+		info, err := os.Stat(codexHome)
+		if err != nil {
+			return fmt.Errorf("stat CODEX_HOME %q: %w", codexHome, err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("CODEX_HOME %q is not a directory", codexHome)
+		}
+	}
 
 	server := &fakeCodexServer{
 		reader:             bufio.NewReader(stdin),

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -45,6 +46,29 @@ type codexClient struct {
 
 const stderrTailLines = 20
 
+func ensureCodexHome(env []string) error {
+	codexHome, ok := lookupEnv(env, "CODEX_HOME")
+	if !ok || strings.TrimSpace(codexHome) == "" {
+		return nil
+	}
+	if err := os.MkdirAll(codexHome, 0o700); err != nil {
+		return fmt.Errorf("create CODEX_HOME %q: %w", codexHome, err)
+	}
+	return nil
+}
+
+func lookupEnv(env []string, key string) (string, bool) {
+	prefix := key + "="
+	for i := len(env) - 1; i >= 0; i-- {
+		entry := env[i]
+		if !strings.HasPrefix(entry, prefix) {
+			continue
+		}
+		return strings.TrimPrefix(entry, prefix), true
+	}
+	return "", false
+}
+
 func launchCodexClient(ctx context.Context, cfg Config) (*codexClient, error) {
 	procCtx := context.WithoutCancel(ctx)
 
@@ -61,6 +85,9 @@ func launchCodexClient(ctx context.Context, cfg Config) (*codexClient, error) {
 		command = exec.CommandContext(procCtx, cfg.CodexCLI, args...)
 	}
 	command.Env = append(command.Environ(), splitEnv(cfg.ChildEnv)...)
+	if err := ensureCodexHome(command.Env); err != nil {
+		return nil, err
+	}
 
 	stdin, err := command.StdinPipe()
 	if err != nil {
